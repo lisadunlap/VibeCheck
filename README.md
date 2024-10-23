@@ -45,6 +45,12 @@ python main.py --config configs/base.yaml wandb=True
 ```
 This runs a toy example on LLM outputs, one model is prompted to be friendly, the other cold and factual. I randomly assigned preference so friendly results are favored 80% of the time
 
+## Data Structure
+
+All data needs to contain the columns "question", model_name_1, model_name_2, and optionally "preference". If the preference column is not provided, running main will compute the preference via LLM as a jude (warning the LLMs are hardcoded in the file)
+
+Say your two models are gpt-4o and gemini-1.5-flash. Your CSV should have the columns "question", "gpt-4o", "gemini-1.5-flash" and in your config, set your data path and set `models: [gpt-4o, gemini-1.5-flash]`. Sometime soon I will add an option to only optimize for model matching if you only care to find differentiating qualities, so get excited for that. 
+
 ## Code Structure (more explanation coming soon)
 
 This code structure is loosely modeled off the [VisDiff repo](https://github.com/Understanding-Visual-Datasets/VisDiff)
