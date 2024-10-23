@@ -1,8 +1,8 @@
-# Give your generative models a vibe check
+# Give your generative models a vibe check :D
 ### VibeCheck: Discover and Quantify Qualitative Differences in Large Language Models
 Lisa Dunlap, Krishna Mandal, Trevor Darrell, Jacob Steinhardt, Joseph E. Gonzalez
 
-Paper link [here](https://arxiv.org/abs/2410.12851), website and joke version of paper coming soon :)
+Paper link [here](https://arxiv.org/abs/2410.12851), website and joke version of paper coming soon 
 
 <p align="center">
   <img src="method_vibecheck.png" width="800">
