@@ -15,28 +15,11 @@ import plotly.graph_objects as go
 import plotly.express as px
 
 import wandb
-
-# from serve.utils_clip import get_embeddings
 from serve.utils_llm import get_llm_output
-
-# from serve.utils_vlm import get_vlm_output
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from sklearn.metrics import cohen_kappa_score
 from tqdm import tqdm
-
-from components.proposer import LLMProposer
-
-
-def get_llm_output_wrapper(prompt, model, system_prompt=None, history=None):
-    return get_llm_output(
-        prompt, model=model, system_prompt=system_prompt, history=history
-    )
-
-
-smaller_systems_prompt = (
-    "You are a helpful assistant. Your outputs adhere to the format given by the user."
-)
 
 
 class Ranker:
