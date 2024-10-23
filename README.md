@@ -19,11 +19,10 @@ Currently Arena data is not available, we will release the battles with PII remo
   conda activate myenv
   ```
 
-1. Installation 
+1. Installation (*Please make a PR if I forgot any imports!*)
 ```
 pip install -r requirements.txt
 ```
-*Please make a PR if I forgot any imports!*
 
 2. Create a weights and biases account if you dont already have one (you may also have to change the entity in `main_iter_stack.py`)
 
