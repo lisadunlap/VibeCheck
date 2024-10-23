@@ -82,36 +82,6 @@ class NullRanker(Ranker):
         return [0.0] * len(dataset)
 
 
-def fleiss_kappa(M):
-    """
-    Calculate Fleiss' kappa for a matrix of shape (n_items, n_categories).
-    M is a matrix where each column represents a category and each row represents a different subject.
-    Each cell in the matrix represents the number of raters who assigned the corresponding category to that subject.
-    """
-    N, k = M.shape  # N is number of items, k is number of categories
-    n = np.sum(
-        M[0, :]
-    )  # number of ratings per item, assumed to be the same across items
-
-    # The proportion of all assignments which were to category j
-    p_j = np.sum(M, axis=0) / (N * n)
-
-    # The extent to which raters agree for the ith item
-    P_i = (np.sum(M**2, axis=1) - n) / (n * (n - 1))
-
-    # Mean of P_i over all items
-    P_bar = np.mean(P_i)
-
-    # Expected agreement by chance
-    P_e = np.sum(p_j**2)
-
-    kappa = (P_bar - P_e) / (1 - P_e)
-
-    return (
-        kappa if (1 - P_e) != 0 else 0
-    )  # return 0 if division by zero occurs (degenerate case)
-
-
 def aggregate_scores(scores):
     # given a  num_items x num_judges matrix of scores, aggregate the scores into a single score per item
     mode_score, count = mode(scores, axis=0, keepdims=False)
@@ -250,8 +220,6 @@ Remember to be as objective as possible and strictly adhere to the response form
         from components.mm_and_pp_modeling import get_score
 
         print(f"Scoring hypothesis {hypothesis}")
-        # judge_scores = {f"Judge_{i}_scores": [] for i in range(self.num_judges)}
-        # add final scores
         judge_scores = {}
         for i in range(self.num_judges):
             judge_scores[f"Judge_{i}_scores"] = []
@@ -281,7 +249,7 @@ Remember to be as objective as possible and strictly adhere to the response form
             row["avg_diff_scores"] = aggregate_scores(
                 np.array([row[f"Judge_{i}_diff_score"] for i in range(self.num_judges)])
             )["Average Score"]
-            row["avg_final_scores"] = np.mean(
+            row["avg_final_scores"] = np.average(
                 [row[f"Judge_{i}_final_score"] for i in range(self.num_judges)]
             )
             row["score"] = get_score(row["avg_diff_scores"])
@@ -347,15 +315,10 @@ Remember to be as objective as possible and strictly adhere to the response form
         from itertools import combinations
 
         metrics = {"axis": axis}
-        # Prepare data for Fleiss' Kappa
-        category_labels = [-2, -1, 0, 1, 2]
         if plot:
             self.plot_score_distribution(axis, scores, self.args.models)
 
         for m, model in enumerate(self.args.models):
-            score_counts = np.zeros(
-                (len(scores[next(iter(scores))]), len(category_labels))
-            )  # Rows are items, columns are categories
             judge_pairs = list(
                 combinations(range(self.num_judges), 2)
             )  # List of all pairs of judges
@@ -421,8 +384,6 @@ Remember to be as objective as possible and strictly adhere to the response form
                     for i in range(-1, 2)
                 }
             )
-
-            # plot the distribution of scores
 
         # do a paired t_test for the per-sample scores averaged across judges for each set of models
         model_pairs = list(combinations(self.args.models, 2))

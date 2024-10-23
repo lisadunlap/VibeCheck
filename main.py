@@ -452,25 +452,25 @@ def train_lr_models(
             f"pref_feature_importance_iter_{iteration}-{tag}": wandb.Table(
                 dataframe=pref_feature_importance
             ),
-            f"mm_feature_importance_{iteration}-{tag}": wandb.Table(
+            f"mm_feature_importance_iter_{iteration}-{tag}": wandb.Table(
                 dataframe=mm_feature_importance
             ),
-            f"all_feature_importance_{iteration}-{tag}": wandb.Table(
+            f"all_feature_importance_iter_{iteration}-{tag}": wandb.Table(
                 dataframe=all_feature_importance
             ),
         }
     )
-    wandb.summary[f"pref_model_prediction_value_counts_{iteration}-{tag}"] = str(
+    wandb.summary[f"pref_model_prediction_value_counts_iter_{iteration}-{tag}"] = str(
         pref_test_results[: len(pref_test_results) // 2]["predicted"]
         .value_counts()
         .reset_index()
     )
     pref_feature_importance.to_json(
-        f"{args.save_dir}/{save_str}/pref_feature_importance-{tag}_{iteration}.json",
+        f"{args.save_dir}/{save_str}/pref_feature_importance-{tag}_iter_{iteration}.json",
         orient="records",
     )
     mm_feature_importance.to_json(
-        f"{args.save_dir}/{save_str}/mm_feature_importance-{tag}_{iteration}.json",
+        f"{args.save_dir}/{save_str}/mm_feature_importance-{tag}_iter_{iteration}.json",
         orient="records",
     )
     eval_axes = list(

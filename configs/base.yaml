@@ -1,5 +1,5 @@
 project: VibeCheck-Baseline # project name in wandb
-wandb: False
+wandb: True
 
 
 # Exp Configs
@@ -15,7 +15,7 @@ filter_pref_only: False
 
 # Data
 data_path: data/friendly_and_cold_sample.csv
-output_name: False
+output_name: toy_example # name of the output folder and wand run name
 test_data_path: False # path to test data, if false test data and train data are the same
 test: False
 save_dir: pipeline_results

@@ -123,8 +123,6 @@ def main():
     np.random.seed(args.seed)
     random.seed(args.seed)
 
-    print("WHAT IS HAPPENING")
-
     # Turn off wandb logging if not needed
     if not args.wandb:
         os.environ["WANDB_MODE"] = "dryrun"
