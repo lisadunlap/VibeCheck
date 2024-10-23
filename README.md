@@ -1,6 +1,6 @@
 # VibeCheck:  Discover and Quantify Qualitative Differences in Large Language Models
 
-![VibeCheck Components](method_vibecheck.png)
+<img src="method_vibecheck.png" width="400">
 
 Paper link [here](https://arxiv.org/abs/2410.12851), website and joke version of paper coming soon!
 
