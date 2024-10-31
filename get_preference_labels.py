@@ -74,34 +74,6 @@ def get_llm_pref_score(df, args):
     return preferences, preference_results
 
 
-def generate_preference_results(df, args):
-    if "preference" in df.columns:
-        df["avg_diff_scores"] = df["preference"].apply(
-            lambda x: get_pref_score(x, args)
-        )
-        df["avg_final_scores"] = df["avg_diff_scores"].apply(get_score)
-        df["axis"] = "preference"
-        return df
-    else:
-        # args.judges = ["gpt-4o", "claude-3-5-sonnet-20240620"]
-        args.judges = ["gpt-4o"]
-        evaluator = getattr(rankers, "PreferenceRanker")(args)
-
-        # Score preference on training data
-        (
-            preference_metrics,
-            preference_results,
-            preference_scoring_logs,
-        ) = evaluator.score(
-            ["preference"],
-            df.to_dict("records"),
-            pd.DataFrame([{"axis": "preference"}]),
-        )
-        preference_results["score"] = preference_results["avg_final_scores"]
-        preference_results["axis"] = "preference"
-    return preference_results
-
-
 def main():
     # Add in args to override defaults
     parser = argparse.ArgumentParser(description="CLIP Advice")

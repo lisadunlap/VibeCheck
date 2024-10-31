@@ -190,7 +190,7 @@ def evaluate_axes(eval_axes, data_df, args):
 
         cohns_results[axis] = kappa
 
-    results["score"] = results["avg_final_scores"]
+    # results["score"] = results["avg_final_scores"]
     if len(eval_axes) > len(results["axis"].unique()):
         print("Some axes were removed during evaluation.")
     eval_axes = results["axis"].unique().tolist()
@@ -342,6 +342,8 @@ def train_lr_models(
         feat_df2["preference"] = -feat_df2["preference"]
         return feat_df, pd.concat([feat_df1, feat_df2])
 
+    print("Train Pref Features")
+    print(test_preference_results)
     train_feat_df, train_pref_features = prep_feat_df(
         eval_results, preference_results, args
     )
@@ -532,8 +534,9 @@ def get_llm_pref_score(df, args):
     if args.dummy_preference:
         return [args.models[0]] * len(df)
 
-    args.judges = ["gpt-4o"]
-    evaluator = getattr(rankers, "PreferenceRanker")(args)
+    args_copy = args.copy()
+    args_copy.judges = args.preference_judges
+    evaluator = getattr(rankers, "PreferenceRanker")(args_copy)
 
     # Score preference on training data
     (
@@ -543,7 +546,6 @@ def get_llm_pref_score(df, args):
     ) = evaluator.score(
         ["preference"],
         df.to_dict("records"),
-        pd.DataFrame([{"axis": "preference"}]),
     )
     preference_results["score"] = preference_results["avg_final_scores"]
 
@@ -558,42 +560,6 @@ def get_llm_pref_score(df, args):
     preferences = preference_results["score"].apply(get_p)
     print(f"Preferences: {preferences}")
     return preferences
-
-
-def generate_preference_results(df, args):
-    if "preference" in df.columns:
-        df["avg_diff_scores"] = df["preference"].apply(
-            lambda x: get_pref_score(x, args)
-        )
-        df["avg_final_scores"] = df["avg_diff_scores"].apply(get_score)
-        df["axis"] = "preference"
-        return df
-    else:
-        if args.dummy_preference:
-            preference_results = df.copy()
-            preference_results["avg_diff_scores"] = [[1, -1]] * len(preference_results)
-            preference_results["avg_final_scores"] = preference_results[
-                "avg_diff_scores"
-            ].apply(get_score)
-            preference_results["axis"] = "preference"
-        else:
-            # args.judges = ["gpt-4o", "claude-3-5-sonnet-20240620"]
-            args.judges = ["gpt-4o"]
-            evaluator = getattr(rankers, "PreferenceRanker")(args)
-
-            # Score preference on training data
-            (
-                preference_metrics,
-                preference_results,
-                preference_scoring_logs,
-            ) = evaluator.score(
-                ["preference"],
-                df.to_dict("records"),
-                pd.DataFrame([{"axis": "preference"}]),
-            )
-            preference_results["score"] = preference_results["avg_final_scores"]
-            preference_results["axis"] = "preference"
-        return preference_results
 
 
 def main():
@@ -713,8 +679,13 @@ def main():
     max_iterations = args.max_iterations if hasattr(args, "max_iterations") else 3
 
     # Initialize preference results if needed
-    preference_results = None  # You may need to generate or load this
     if "preference" not in df.columns:
+        enter = input(
+            "You are about to generate preference scores. Press enter to continue."
+        )
+        if not enter == "":
+            exit()
+        # raise ValueError("Preference column not found in df")
         df["preference"] = get_llm_pref_score(df, args)
         heldout_df["preference"] = get_llm_pref_score(heldout_df, args)
         # drop any preference
@@ -724,10 +695,11 @@ def main():
         heldout_df.to_csv(
             f"{args.save_dir}/{save_str}/heldout_df-{tag}.csv", index=False
         )
-        print(f"Train Preference Value Counts: {df['preference'].value_counts()}")
-        print(
-            f"Test Preference Value Counts: {heldout_df['preference'].value_counts()}"
-        )
+        
+    print(f"Train Preference Value Counts: {df['preference'].value_counts()}")
+    print(
+        f"Test Preference Value Counts: {heldout_df['preference'].value_counts()}"
+    )
 
     eval_axes = []
     prev_eval_axes = []
@@ -819,11 +791,15 @@ def main():
 
         prev_eval_axes = filtered_eval_axes
 
-        # Step 4: Train LR Models for both mm and preference
-        if preference_results is None:
-            # Generate preference results if not already available
-            preference_results = generate_preference_results(df, args)
-            test_preference_results = generate_preference_results(heldout_df, args)
+ 
+
+        # # Step 4: Train LR Models for both mm and preference
+        preference_results = df.copy()
+        preference_results["avg_final_scores"] = preference_results["preference"].apply(lambda x: get_score(get_pref_score(x, args)))
+        preference_results["axis"] = "preference"
+        test_preference_results = heldout_df.copy()
+        test_preference_results["avg_final_scores"] = test_preference_results["preference"].apply(lambda x: get_score(get_pref_score(x, args)))
+        test_preference_results["axis"] = "preference"
 
         print(f"Filtered Eval Axes: {filtered_eval_axes}")
         (

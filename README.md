@@ -2,7 +2,7 @@
 ### VibeCheck: Discover and Quantify Qualitative Differences in Large Language Models
 Lisa Dunlap, Krishna Mandal, Trevor Darrell, Jacob Steinhardt, Joseph E. Gonzalez
 
-Paper link [here](https://arxiv.org/abs/2410.12851), website and joke version of paper coming soon 
+Paper link [here](https://arxiv.org/abs/2410.12851), joke version of paper coming soon 
 
 <p align="center">
   <img src="method_vibecheck.png" width="800">
@@ -11,7 +11,11 @@ Paper link [here](https://arxiv.org/abs/2410.12851), website and joke version of
 
 **Still cleaning this up:** I got distracted trying to implement some causal inference stuff...
 
-Currently Arena data is not available, we will release the battles with PII removed shortly, will also add configs for all of the datasets.
+## Data
+
+* [Link to chatbot arena data](https://huggingface.co/datasets/lmarena-ai/Llama-3-70b-battles)
+* [Human VS GPT (HC3)](https://huggingface.co/datasets/Hello-SimpleAI/HC3)
+* [HELM Predictions](https://crfm.stanford.edu/helm/classic/latest/) (fair warning, this is a real pain to download)
 
 ## Quickstart
 
@@ -63,3 +67,17 @@ Here are the core components:
 * [Reducer](components/reducer.py): takes a long list of axes and returns a shorter list of representative axes
 * [Ranker](components/ranker.py): takes in a triplet and an axis and produces a score
 
+## 🎯 Citation
+
+If you use this repo in your research, please cite it as follows and ideally use the word 'vibe' in said research:
+```
+@article{dunlap_vibecheck,
+  title={VibeCheck: Discover and Quantify Qualitative Differences in Large Language Models},
+  author={Lisa Dunlap and Krishna Mandal and Trevor Darrell and Jacob Steinhardt and Joseph E Gonzalez},
+  journal={arXiv preprint arXiv:2312.02974},
+  year={2024},
+  archivePrefix={arXiv},
+  primaryClass={cs.LG},
+  url={https://arxiv.org/abs/2410.12851},
+}
+```

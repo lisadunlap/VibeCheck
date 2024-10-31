@@ -54,6 +54,7 @@ reducer: AxisReducer
 # Ranker
 ranker: RelativeRanker
 judges: [gpt-4o-mini]
+preference_judges: [gpt-4o-mini] # judges to use for LL-as-a-Judge preference
 num_workers: 32
 
 # If set to false, then the axes will be discovered from the data. Otherwise you can set it to a list of preset axes
