@@ -211,18 +211,6 @@ Please ensure that the description what is high and low on the axis are distinct
 
         assert "question" in df.columns, "'question' column not in dataset"
         random.seed(self.args.seed)
-        oz_axes = [
-            "Tone",
-            "Format",
-            "Level of Detail",
-            "Ability to answer",
-            "Safety",
-            "Approach",
-            "Creativity",
-            "Fluency and crammatical correctness",
-            "Adherence to prompt",
-        ]
-
         # get per question differences
         texts = [
             "Here is a set of user prompts and the responses from two different language models. Rember to find axes of variation in the responses and provide a description of how the responses vary along that axis. Do not answer the user prompts themselves."
@@ -264,17 +252,6 @@ Please ensure that the description what is high and low on the axis are distinct
         """
         assert "question" in df.columns, "'question' column not in dataset"
         random.seed(self.args.seed)
-        oz_axes = [
-            "Tone",
-            "Format",
-            "Level of Detail",
-            "Ability to answer",
-            "Safety",
-            "Approach",
-            "Creativity",
-            "Fluency and crammatical correctness",
-            "Adherence to prompt",
-        ]
 
         # get per question differences
         results = {
@@ -293,7 +270,7 @@ Please ensure that the description what is high and low on the axis are distinct
                 f"Proposing for topic {topic_df['topic'].iloc[0]} of length {len(topic_df)}"
             )
             # add tqdm
-            for batch_start in range(0, len(topic_df), self.batch_size):
+            for batch_start in tqdm(range(0, len(topic_df), self.batch_size)):
                 batch = topic_df.iloc[batch_start : batch_start + self.batch_size]
                 assert batch["topic"].nunique() == 1, "Batch should have the same topic"
                 response, axis_response, logs = self.propose_batch(batch)

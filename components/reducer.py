@@ -123,12 +123,6 @@ def get_cluster_axes(cluster, model="gpt-4", batch=100):
     {axes}
 
     Again I want to cluster these axes into a minimal set of parent axes that cover the entire axis list. Please ensure these parent axes' descriptions of what makes an item high or low on that axis align with the high and low descriptions of the axes they cover. Your new set of axes should be distinct so each of the above axes fit under exactly one of your new axes. Please ensure each axis and parent axis contains an axis name and descriptions of what it means to score high or low on that axis in the same format as the provided axes.  Please ensure the descriptions of what is considered high and low on each axis is clear, concise, under 10 words."""
-
-    conversion_prompt = """I have a list of axes that I would like to convert into a list that I can parse in python. Here are the axes:
-    
-    {}
-    
-    My goal is to convert this into a list that I can parse with  with ast.literal_eval() in python. The format should be as follows:"""
     smaller_systems_prompt = "You are a helpful assistant. Your outputs adhere to the format given by the user."
     cluster = set(cluster)
     cluster_batch = random.sample(cluster, min(batch, len(cluster)))
