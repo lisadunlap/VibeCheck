@@ -8,6 +8,58 @@ from scipy.stats import norm
 from sklearn.model_selection import cross_val_score, KFold
 from sklearn.preprocessing import StandardScaler
 
+def prep_feat_df(eval_results, preference_results, args, eval_axes):
+    preference_results["score"] = preference_results["avg_final_scores"]
+    preference_results["axis"] = "preference"
+    eval_results["score"] = eval_results["avg_final_scores"]
+
+    df_pref = pd.concat([eval_results, preference_results])
+    feat_df = create_feature_df(df_pref, args).dropna()
+    
+    feat_df1 = feat_df.copy()
+    feat_df2 = feat_df.copy()
+    feat_df1["model_label"] = 0
+    feat_df2["model_label"] = 1
+    for axis in eval_axes:
+        feat_df2[axis] = -feat_df2[axis]
+    feat_df2["preference"] = -feat_df2["preference"]
+    
+    return feat_df, pd.concat([feat_df1, feat_df2])
+
+def train_and_evaluate(train_features, test_features, eval_axes, label_column, args, tag, iteration, model_type="logistic"):
+    X_train = train_features[eval_axes]
+    y_train = train_features[label_column].apply(lambda x: 1 if x > 0 else 0)
+
+    X_test = test_features[eval_axes]
+    y_test = test_features[label_column].apply(lambda x: 1 if x > 0 else 0)
+
+    # Train model and unpack the returned values
+    (
+        accuracy,
+        feature_importance,
+        test_results,
+        train_accuracy,
+        train_results,
+        summary,
+        feature_order,
+    ) = train_model(X_train, y_train, X_test, y_test, eval_axes, label_column, model_type=model_type, x_val=(tag == "train"))
+
+    # Update results
+    train_results["question"] = train_features["question"]
+    test_results["question"] = test_features["question"]
+
+    for model in args.models:
+        train_results[model] = train_features[model]
+        test_results[model] = test_features[model]
+
+    return {
+        "accuracy": accuracy,
+        "feature_importance": feature_importance,
+        "test_results": test_results,
+        "train_accuracy": train_accuracy,
+        "feature_order": feature_order,
+    }
+
 def compute_p_values(model, X_train, y_train):
     # Wald test for logistic regression
     n = X_train.shape[0]
@@ -91,10 +143,10 @@ def train_single_model(
         results = model
     else:  # logistic regression
         # this is a new model that I've been trying out to better understand feature importance, not used in the paper 
-        # model = LogisticRegressionCV(
-        #     penalty="elasticnet", solver="saga", l1_ratios=[0.5]
-        # )
-        model = LogisticRegressionCV()
+        model = LogisticRegressionCV(
+            penalty="elasticnet", solver="saga", l1_ratios=[0.5]
+        )
+        # model = LogisticRegressionCV()
         model.fit(X_train, y_train)
         y_pred = model.predict(X_test)
         accuracy = accuracy_score(y_test, y_pred)
@@ -180,7 +232,6 @@ def create_feature_df(df, args):
     axes = df["axis"].unique()
     features = []
     for axis in axes:
-        print(axis)
         axis_df = df[df["axis"] == axis]
         axis_df = axis_df[["question"] + list(args.models) + ["score"]]
         axis_df.columns = ["question"] + list(args.models) + [axis]
