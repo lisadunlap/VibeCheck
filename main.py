@@ -20,9 +20,15 @@ from components.mm_and_pp_modeling import (
     create_feature_df,
     train_model,
     generate_vibe_overlap_heatmap,
-    calculate_vibe_overlap
+    calculate_vibe_overlap,
 )
-from utils import get_save_str, load_experiment, remove_similar_fuzzy_rows
+from utils import (
+    get_save_str,
+    load_experiment,
+    remove_similar_fuzzy_rows,
+    plot_score_wandb,
+    get_pref_score,
+)
 
 
 def propose_axes(proposal_df, args):
@@ -66,8 +72,12 @@ def propose_axes_iteration(proposal_df, args, axes, iteration=1):
     # Log the proposer outputs
     wandb.log(
         {
-            f"Ranker Logs/per_sample_differences-{iteration}": wandb.Table(dataframe=results),
-            f"Ranker Logs/pairwise_diff_llm_logs-{iteration}": wandb.Table(dataframe=llm_logs),
+            f"Ranker Logs/per_sample_differences-{iteration}": wandb.Table(
+                dataframe=results
+            ),
+            f"Ranker Logs/pairwise_diff_llm_logs-{iteration}": wandb.Table(
+                dataframe=llm_logs
+            ),
         }
     )
     all_axis_descriptions = list(results["axis_description"])
@@ -121,13 +131,12 @@ Your Response:"""
         # reset new axes to the intersection of the new axes and the axes returned by the user
         new_axes = [n for n in new_axes if n in axes]
 
-    num_eval = min(args.num_eval, len(results["axis"].unique())) if args.num_eval else len(results["axis"].unique())
-    eval_axes = (
-        results["axis"]
-        .value_counts()
-        .head(num_eval)
-        .index.tolist()
+    num_eval = (
+        min(args.num_eval, len(results["axis"].unique()))
+        if args.num_eval
+        else len(results["axis"].unique())
     )
+    eval_axes = results["axis"].value_counts().head(num_eval).index.tolist()
 
     return eval_axes, results
 
@@ -183,13 +192,16 @@ def evaluate_axes(eval_axes, data_df, args):
     )
     return eval_axes, metrics, results, scoring_logs, cohns_results
 
+
 def filter_axes(eval_axes, previous_axes, results, args, iteration=1):
     results["preference"] = results["preference"].apply(
         lambda x: get_pref_score(x, args)
     )
     results["preference"] = results["preference"].apply(get_score)
     # add preference as an axis to results
-    preference_df = results.drop_duplicates(subset=["question", *list(args.models)]).copy()
+    preference_df = results.drop_duplicates(
+        subset=["question", *list(args.models)]
+    ).copy()
     preference_df.loc[:, "axis"] = "preference"
     preference_df.loc[:, "score"] = preference_df["preference"]
     results = pd.concat([results, preference_df])
@@ -272,20 +284,50 @@ def filter_axes(eval_axes, previous_axes, results, args, iteration=1):
     print(f"Removed Axes: {removed_axes}")
     return filtered_eval_axes, removed_axes
 
+
 from components.mm_and_pp_modeling import prep_feat_df, train_and_evaluate
+
+
 def train_lr_models(
-    eval_results, preference_results, test_eval_results, test_preference_results, args, eval_axes, iteration=1, save_str="results", tag="train", cohns_kapps_results=None
+    eval_results,
+    preference_results,
+    test_eval_results,
+    test_preference_results,
+    args,
+    eval_axes,
+    iteration=1,
+    save_str="results",
+    tag="train",
+    cohns_kapps_results=None,
 ):
     # Prepare feature dataframes
-    train_feat_df, train_pref_features = prep_feat_df(eval_results, preference_results, args, eval_axes)
-    test_feat_df, test_pref_features = prep_feat_df(test_eval_results, test_preference_results, args, eval_axes)
+    train_pref_features = prep_feat_df(
+        eval_results, preference_results, args, eval_axes
+    )
+    test_pref_features = prep_feat_df(
+        test_eval_results, test_preference_results, args, eval_axes
+    )
 
     # Train preference and model matching (mm) models
     pref_metrics = train_and_evaluate(
-        train_pref_features, test_pref_features, eval_axes, "preference", args, tag, iteration, model_type="lasso" if args.lasso_regression else "logistic"
+        train_pref_features,
+        test_pref_features,
+        eval_axes,
+        "preference",
+        args,
+        tag,
+        iteration,
+        model_type="lasso" if args.lasso_regression else "logistic",
     )
     mm_metrics = train_and_evaluate(
-        train_pref_features, test_pref_features, eval_axes, "model_label", args, tag, iteration, model_type="lasso" if args.lasso_regression else "logistic"
+        train_pref_features,
+        test_pref_features,
+        eval_axes,
+        "model_label",
+        args,
+        tag,
+        iteration,
+        model_type="lasso" if args.lasso_regression else "logistic",
     )
 
     # Compute feature importance scores
@@ -297,9 +339,13 @@ def train_lr_models(
     )
 
     # Log results to WandB
-    wandb.log({
-        f"MM and PP Models/all_feature_importance_iter_{iteration}-{tag}": wandb.Table(dataframe=all_feature_importance),
-    })
+    wandb.log(
+        {
+            f"MM and PP Models/all_feature_importance_iter_{iteration}-{tag}": wandb.Table(
+                dataframe=all_feature_importance
+            ),
+        }
+    )
 
     return (
         pref_metrics["accuracy"],
@@ -339,15 +385,6 @@ def get_misclassified_samples(
     return data_df[data_df["question"].isin(misclassified["question"])].drop_duplicates(
         subset="question"
     )
-
-
-def get_pref_score(preference, args):
-    if preference == args.models[0]:
-        return [1, -1]
-    elif preference == args.models[1]:
-        return [-1, 1]
-    else:
-        return [0, 0]
 
 
 def get_llm_pref_score(df, args):
@@ -446,10 +483,13 @@ def main():
     )
     wandb.run.log_code(flags.config)
 
-    num_samples =  min(args.num_samples, df.shape[0]) if args.num_samples else df.shape[0]
+    num_samples = (
+        min(args.num_samples, df.shape[0]) if args.num_samples else df.shape[0]
+    )
     num_eval_samples = (
-        min(args.num_eval_samples, heldout_df.shape[0]) 
-        if args.num_eval_samples else heldout_df.shape[0]
+        min(args.num_eval_samples, heldout_df.shape[0])
+        if args.num_eval_samples
+        else heldout_df.shape[0]
     )
     if args.test:
         num_samples, num_eval_samples = 10, 10
@@ -472,8 +512,8 @@ def main():
             drop=True
         )[:num_eval_samples]
 
-    df = df[df['preference'] != 'equal']
-    heldout_df = heldout_df[heldout_df['preference'] != 'equal']
+    df = df[df["preference"] != "equal"]
+    heldout_df = heldout_df[heldout_df["preference"] != "equal"]
 
     # Sample (this is a NoOp if you arent clustering by question type)
     sampler = getattr(samplers, args.sampler)(args)
@@ -500,34 +540,36 @@ def main():
         heldout_df.to_csv(
             f"{args.save_dir}/{save_str}/heldout_df-{tag}.csv", index=False
         )
-    
+
     # make wandb count plot for preference
-    pref_stats = df['preference'].value_counts().reset_index()
+    pref_stats = df["preference"].value_counts().reset_index()
     pref_stats.columns = ["model", "preference count"]
     print(pref_stats)
-    wandb.log({
-        "Heuristics/preference_counts": wandb.plot.bar(
-            wandb.Table(dataframe=pref_stats),
-            "model",
-            "preference count",
-            title="Train Preference Value Counts"
-        )
-    })
-    test_pref_stats = heldout_df['preference'].value_counts().reset_index()
-    test_pref_stats.columns = ["model", "preference count"]
-    wandb.log({
-        "Heuristics/test_preference_counts": wandb.plot.bar(
-            wandb.Table(dataframe=test_pref_stats),
-            "model",
-            "preference count",
-            title="Test Preference Value Counts"
-        )
-    })
-        
-    print(f"Train Preference Value Counts: {df['preference'].value_counts()}")
-    print(
-        f"Test Preference Value Counts: {heldout_df['preference'].value_counts()}"
+    wandb.log(
+        {
+            "Heuristics/preference_counts": wandb.plot.bar(
+                wandb.Table(dataframe=pref_stats),
+                "model",
+                "preference count",
+                title="Train Preference Value Counts",
+            )
+        }
     )
+    test_pref_stats = heldout_df["preference"].value_counts().reset_index()
+    test_pref_stats.columns = ["model", "preference count"]
+    wandb.log(
+        {
+            "Heuristics/test_preference_counts": wandb.plot.bar(
+                wandb.Table(dataframe=test_pref_stats),
+                "model",
+                "preference count",
+                title="Test Preference Value Counts",
+            )
+        }
+    )
+
+    print(f"Train Preference Value Counts: {df['preference'].value_counts()}")
+    print(f"Test Preference Value Counts: {heldout_df['preference'].value_counts()}")
 
     eval_axes = []
     prev_eval_axes = []
@@ -568,7 +610,9 @@ def main():
                 proposal_df = get_misclassified_samples(
                     pref_train_results, mm_train_results, df, list(args.models), args
                 )
-                proposal_df = proposal_df.sample(min(args.num_proposal_samples, len(proposal_df)))
+                proposal_df = proposal_df.sample(
+                    min(args.num_proposal_samples, len(proposal_df))
+                )
                 if proposal_df.empty:
                     print("No misclassified samples. Stopping iterations.")
                     break
@@ -580,7 +624,7 @@ def main():
             if not (args.axes and iteration == 0):
                 reduced_eval_axes, reducer_results = reduce_axes(
                     all_axis_descriptions, proposer_results, args, save_str, eval_axes
-                ) 
+                )
                 reducer_results.to_json(
                     f"{args.save_dir}/{save_str}/reducer_results-{iteration}.json",
                     orient="records",
@@ -618,10 +662,14 @@ def main():
 
         # # Step 4: Train LR Models for both mm and preference
         preference_results = df.copy()
-        preference_results["avg_final_scores"] = preference_results["preference"].apply(lambda x: get_score(get_pref_score(x, args)))
+        preference_results["avg_final_scores"] = preference_results["preference"].apply(
+            lambda x: get_score(get_pref_score(x, args))
+        )
         preference_results["axis"] = "preference"
         test_preference_results = heldout_df.copy()
-        test_preference_results["avg_final_scores"] = test_preference_results["preference"].apply(lambda x: get_score(get_pref_score(x, args)))
+        test_preference_results["avg_final_scores"] = test_preference_results[
+            "preference"
+        ].apply(lambda x: get_score(get_pref_score(x, args)))
         test_preference_results["axis"] = "preference"
 
         print(f"Filtered Eval Axes: {filtered_eval_axes}")
@@ -700,7 +748,10 @@ def main():
                 test_mm_accuracy,
                 test_pref_train_results,
                 test_mm_train_results,
-                _, _, _, _,
+                _,
+                _,
+                _,
+                _,
             ) = train_lr_models(
                 eval_results,
                 preference_results,
@@ -789,7 +840,8 @@ def main():
         pref_feature_importance,
         mm_feature_importance,
         mm_feature_order,
-    ) = train_lr_models(eval_results,
+    ) = train_lr_models(
+        eval_results,
         preference_results,
         eval_results,
         preference_results,
@@ -800,10 +852,7 @@ def main():
         "train",
         cohns_kappa,
     )
-    print(eval_results['preference'].value_counts())
-    exit()
 
-    # convert into numbered list for vibes
     eval_axes_str = "\n".join([f"{i+1}. {axis}" for i, axis in enumerate(eval_axes)])
     filtered_eval_axes_str = "\n".join(
         [f"{i+1}. {axis}" for i, axis in enumerate(final_eval_axes)]
@@ -822,7 +871,6 @@ def main():
         ],
         axis=0,
     )
-    # log train metrics
     wandb.log(
         {
             "iteration": iteration + 1,
@@ -834,8 +882,9 @@ def main():
 
     # eval on test set
     args.early_stopping = False
+    _, _, eval_results, _, _ = evaluate_axes(final_eval_axes, df, args)
     _, test_metrics, test_eval_results, test_scoring_logs, test_cohns_kappa = (
-        evaluate_axes(eval_axes, heldout_df, args)
+        evaluate_axes(final_eval_axes, heldout_df, args)
     )
 
     (
@@ -843,7 +892,10 @@ def main():
         test_mm_accuracy,
         test_pref_train_results,
         test_mm_train_results,
-        _, _, _, _,
+        _,
+        _,
+        _,
+        _,
     ) = train_lr_models(
         eval_results,
         preference_results,
@@ -857,38 +909,9 @@ def main():
         test_cohns_kappa,
     )
 
-    def plot_score_wandb(eval_results,title="Test"):
-        eval_results = eval_results.copy() 
-        plotting_eval_results = eval_results.groupby('axis')['score'].mean().reset_index()
-        wandb.log({
-            f"Heuristics/{title}_score_per_axis": wandb.plot.bar(
-                wandb.Table(dataframe=plotting_eval_results),
-                "axis",
-                "score",
-                title=f"Seperability Score Per Vibe ({title})"
-            )
-        })
+    plot_score_wandb(test_eval_results, args, title="Test")
+    plot_score_wandb(eval_results, args, title="Train")
 
-        eval_results["preference"] = eval_results["preference"].apply(lambda x: get_score(get_pref_score(x, args)))
-        eval_results["pref_times_score"] = eval_results["score"] * eval_results["preference"]
-        plotting_eval_pref_results = eval_results.groupby('axis')['pref_times_score'].mean().reset_index()
-        if title == "Train":
-            print(eval_results[['preference', 'score']].head())
-            print(plotting_eval_pref_results)
-            exit()
-        wandb.log({
-            f"Heuristics/{title}_pref_score_per_axis": wandb.plot.bar(
-                wandb.Table(dataframe=plotting_eval_pref_results),
-                "axis",
-                "pref_times_score",
-                title=f"Pref Score Per Vibe ({title})"
-            )
-        })
-
-    plot_score_wandb(test_eval_results, title="Test")
-    plot_score_wandb(eval_results, title="Train")
-
-    # save eval_results and test_eval_results
     eval_results.to_json(
         f"{args.save_dir}/{save_str}/eval_results_final.json", orient="records"
     )

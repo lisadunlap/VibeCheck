@@ -183,18 +183,18 @@ def main():
             return np.sum(scores) / (np.sum(scores != 0.5))
         # 1 if model 1 wins, -1 if model 2 wins, 0.5 if tie
         return np.mean(scores)
-    
+
     # Print preference distribution in a clear format
     print("\n=== Model Preference Distribution ===")
     print("Training Data:")
-    train_counts = df['preference'].value_counts()
+    train_counts = df["preference"].value_counts()
     train_total = len(df)
     for model, count in train_counts.items():
         percentage = (count / train_total) * 100
         print(f"{model}: {count:,} samples ({percentage:.1f}%)")
-        
+
     print("\nTest Data:")
-    test_counts = heldout_df['preference'].value_counts()
+    test_counts = heldout_df["preference"].value_counts()
     test_total = len(heldout_df)
     for model, count in test_counts.items():
         percentage = (count / test_total) * 100

@@ -1,19 +1,12 @@
-import hashlib
-import json
-import os
 import random
-import torch
-import ast
 from typing import Dict, List, Tuple
 
 import pandas as pd
-from PIL import Image, PngImagePlugin
+from PIL import PngImagePlugin
 
 LARGE_ENOUGH_NUMBER = 100
 PngImagePlugin.MAX_TEXT_CHUNK = LARGE_ENOUGH_NUMBER * (1024**2)
 
-import components.prompts as prompts
-import wandb
 from serve.utils_llm import get_llm_output
 from tqdm import tqdm
 import omegaconf

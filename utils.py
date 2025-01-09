@@ -3,6 +3,7 @@ import pandas as pd
 from fuzzywuzzy import fuzz
 import wandb
 
+
 def get_save_str(args, num_samples, model_group):
     # Create string of datapath for saving
     save_str = args.data_path.split("/")[-1].split(".")[0]
@@ -42,3 +43,53 @@ def remove_similar_fuzzy_rows(df, col1, col2, threshold=80):
     # Apply the mask to keep only dissimilar rows
     df_filtered = df[mask]
     return df_filtered
+
+
+def get_pref_score(preference, args):
+    if preference == args.models[0]:
+        return [1, -1]
+    elif preference == args.models[1]:
+        return [-1, 1]
+    else:
+        return [0, 0]
+
+
+from components.mm_and_pp_modeling import get_score
+
+
+def plot_score_wandb(eval_results, args, title="Test"):
+    """
+    Plots the seperability score per vibe and the preference score per vibe
+    """
+    eval_results = eval_results.copy()
+    plotting_eval_results = eval_results.groupby("axis")["score"].mean().reset_index()
+    wandb.log(
+        {
+            f"Heuristics/{title}_score_per_axis": wandb.plot.bar(
+                wandb.Table(dataframe=plotting_eval_results),
+                "axis",
+                "score",
+                title=f"Seperability Score Per Vibe ({title})",
+            )
+        }
+    )
+
+    eval_results["preference"] = eval_results["preference"].apply(
+        lambda x: get_score(get_pref_score(x, args))
+    )
+    eval_results["pref_times_score"] = (
+        eval_results["score"] * eval_results["preference"]
+    )
+    plotting_eval_pref_results = (
+        eval_results.groupby("axis")["pref_times_score"].mean().reset_index()
+    )
+    wandb.log(
+        {
+            f"Heuristics/{title}_pref_score_per_axis": wandb.plot.bar(
+                wandb.Table(dataframe=plotting_eval_pref_results),
+                "axis",
+                "pref_times_score",
+                title=f"Pref Score Per Vibe ({title})",
+            )
+        }
+    )
