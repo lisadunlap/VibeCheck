@@ -12,7 +12,7 @@ import datetime
 from wandb.sdk.data_types.trace_tree import Trace
 import concurrent.futures
 
-from serve.global_vars import LLM_CACHE_FILE, VICUNA_URL, LLM_EMBED_CACHE_FILE, OPENAI_API_KEY, ANTHROPIC_API_KEY, LLAMA_URL, LLAMA3_70B_URL, LLAMA_API_KEY
+from serve.global_vars import LLM_CACHE_FILE, VICUNA_URL, LLM_EMBED_CACHE_FILE, OPENAI_API_KEY, ANTHROPIC_API_KEY, LLAMA_URL
 from serve.utils_general import get_from_cache, save_to_cache, save_emb_to_cache, get_emb_from_cache
 
 logging.basicConfig(level=logging.ERROR)
@@ -37,10 +37,6 @@ def get_llm_output(prompt: str, model: str, cache = True, system_prompt = None, 
         client = OpenAI(
             base_url=LLAMA_URL,
         )
-    elif model == "llama-3-70b":
-        openai.api_key = LLAMA_API_KEY
-        openai.api_base = LLAMA3_70B_URL
-        client = OpenAI(base_url=LLAMA3_70B_URL)
     else:
         client = anthropic.Anthropic()
         
@@ -113,14 +109,6 @@ def get_llm_output(prompt: str, model: str, cache = True, system_prompt = None, 
             elif model == "llama-3-8b":
                 completion = client.chat.completions.create(
                     model="meta-llama/Meta-Llama-3-8B-Instruct",
-                    messages=messages,
-                    max_tokens=max_tokens,
-                    extra_body={"stop_token_ids":[128009]}
-                )
-                response = completion.choices[0].message.content.strip().replace("<|eot_id|>", "")
-            elif model == "llama-3-70b":
-                completion = client.chat.completions.create(
-                    model="meta-llama/Meta-Llama-3-70B-Instruct",
                     messages=messages,
                     max_tokens=max_tokens,
                     extra_body={"stop_token_ids":[128009]}

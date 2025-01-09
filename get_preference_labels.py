@@ -11,26 +11,7 @@ from components.proposer_prompts import *
 from components.parsing_utils import *
 import components.ranker as rankers
 from components.mm_and_pp_modeling import get_score
-
-
-def get_save_str(args, num_samples, model_group):
-    save_str = args.data_path.split("/")[-1].split(".")[0]
-    save_str = f"{save_str}/{args.output_name}" if args.output_name else save_str
-    save_str = f"{save_str}/{args.proposer}-{args.sampler}_{args.ranker}/{'_'.join(args.judges)}"
-    tag = (
-        f"{model_group}_k{args.k}_seed{args.seed}"
-        if not args.num_samples
-        else f"{model_group}_{args.k}_samples{num_samples}_seed{args.seed}"
-    )
-    tag = f"{tag}_oz" if args.oz else tag
-    tag = f"{tag}_dummy_eval" if args.dummy_eval else tag
-    tag = f"{tag}_axes_provided" if args.axes else tag
-    tag = f"{tag}_early_stopping" if args.early_stopping else tag
-    tag = f"{tag}_filter" if args.filter else tag
-    tag = f"{tag}_filter_mm_only" if args.filter_mm_only else tag
-    if not os.path.exists(f"{args.save_dir}/{save_str}"):
-        os.makedirs(f"{args.save_dir}/{save_str}", exist_ok=True)
-    return save_str, tag
+from utils import get_save_str
 
 
 def get_pref_score(preference, args):
@@ -46,7 +27,7 @@ def get_llm_pref_score(df, args):
     if args.dummy_preference:
         return [args.models[0]] * len(df)
 
-    args.judges = ["gpt-4o", "claude-3-5-sonnet-20240620"]
+    args.judges = args.preference_judges
     evaluator = getattr(rankers, "PreferenceRanker")(args)
 
     # Score preference on training data
@@ -57,7 +38,6 @@ def get_llm_pref_score(df, args):
     ) = evaluator.score(
         ["preference"],
         df.to_dict("records"),
-        pd.DataFrame([{"axis": "preference"}]),
     )
     preference_results["score"] = preference_results["avg_final_scores"]
 
@@ -179,10 +159,13 @@ def main():
             heldout_df, args
         )
         # drop any preference
-        df.to_csv(f"{args.save_dir}/{save_str}/df-{tag}.csv", index=False)
+        print(f"Saving to {args.data_path.replace('.csv', '_with_pref.csv')}")
+        df.to_csv(f"{args.data_path.replace('.csv', '_with_pref.csv')}", index=False)
+        print(f"Saving to {args.test_data_path.replace('.csv', '_with_pref.csv')}")
         heldout_df.to_csv(
-            f"{args.save_dir}/{save_str}/heldout_df-{tag}.csv", index=False
+            f"{args.test_data_path.replace('.csv', '_with_pref.csv')}", index=False
         )
+
         print(f"Value Counts: {df['preference'].value_counts()}")
         print(f"Value Counts: {heldout_df['preference'].value_counts()}")
         for model in args.models:
@@ -200,6 +183,23 @@ def main():
             return np.sum(scores) / (np.sum(scores != 0.5))
         # 1 if model 1 wins, -1 if model 2 wins, 0.5 if tie
         return np.mean(scores)
+    
+    # Print preference distribution in a clear format
+    print("\n=== Model Preference Distribution ===")
+    print("Training Data:")
+    train_counts = df['preference'].value_counts()
+    train_total = len(df)
+    for model, count in train_counts.items():
+        percentage = (count / train_total) * 100
+        print(f"{model}: {count:,} samples ({percentage:.1f}%)")
+        
+    print("\nTest Data:")
+    test_counts = heldout_df['preference'].value_counts()
+    test_total = len(heldout_df)
+    for model, count in test_counts.items():
+        percentage = (count / test_total) * 100
+        print(f"{model}: {count:,} samples ({percentage:.1f}%)")
+    print("===================================\n")
 
     wandb.summary["num_samples"] = num_samples
     wandb.summary["num_eval_samples"] = num_eval_samples

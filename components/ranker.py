@@ -446,7 +446,7 @@ Remember to be as objective as possible and strictly adhere to the response form
 
         # Log the plot to W&B
         fig = ax.get_figure()
-        wandb.log({f"{axis.split(':')[0]}_scores": wandb.Image(fig)})
+        wandb.log({f"Juge Scores/{axis.split(':')[0]} Score Counts": wandb.Image(fig)})
         plt.close(fig)
 
 class RelativeRanker2(RelativeRanker):

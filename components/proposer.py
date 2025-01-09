@@ -306,91 +306,9 @@ Please ensure that the description what is high and low on the axis are distinct
 
 
 class LLMProposerIteration(LLMProposerFixed):
-
-    def __init__(self, args: Dict, axes: List[str]):
-        super().__init__(args)
-        self.axes = axes
-
-    @staticmethod
-    def extract_axes(text):
-        # Define regex pattern to match axes and their high/low descriptions
-        pattern = r"- ([^\n]+):\n\s+High:(.*?)\n\s+Low:(.*?)\n"
-        # Find all matches
-        matches = re.findall(pattern, text, re.DOTALL)
-
-        # Format output with just the axes and descriptions
-        extracted_axes = ""
-        for match in matches:
-            axis_name, high_desc, low_desc = match
-            extracted_axes += f"- {axis_name.strip()}:\n    High:{high_desc.strip()}\n    Low:{low_desc.strip()}\n\n"
-
-        return extracted_axes.strip()
-
-    def propose_batch(self, df):
-        """
-        Get differences over a list of prompts
-        """
-        systems_prompt = """You are an AI researcher looking to compare the behavior of two different LLMs (1 and 2) to determine the defining characteristics of each model. 
-
-To do this, someone examines a set of responces from 1 and 2 given the same set of questions and asked to find axes in which these models differ. Using these axes, each response pair is ranked as being higher or lower on the axis and these features are used to train a model to predict the model based on where the response falls on each axis.
-
-Your task is to remove, refine, and expand a set of axes which have been previously identified by examining the resonses of 1 and 2 which were incorrectly classified. You should remove any redundant axes, refine an axis description if it is unclear or ambiguous, and add new axes if there are other clear differences between the responses that are not captured by the existing axes. A clear axis is one where a human could easily and reliably determine which model is higher or lower on that axis given any pair of text outputs, and this axis should represent a difference seen over multiple responses.
-
-Please think through the axes carefully and make sure they are clear, concise, and non-overlapping. Do not include any of the removed axes in your response. Your output should be in this format:
-
-Refined Axes:
-- {{axis_ 1}}:
-    High: {{description of high}}
-    Low: {{description of low}}
-
-- {{axis_2}}:
-    High: {{description of high}}
-    Low: {{description of low}}
-
-New Axes:
-- {{axis_3}}:
-    High: {{description of high}}
-    Low: {{description of low}}
-
-Do not include any other information in your response.
-"""
-
-        assert "question" in df.columns, "'question' column not in dataset"
-        random.seed(self.args.seed)
-        print("PROPOSER ITERATION")
-
-        # get per question differences
-        texts = []
-        # shuffle args.models
-        shuffled_cols = self.model_columns
-        for i, row in tqdm(df.iterrows(), total=df.shape[0]):
-            if not self.args.exclude_question_in_proposer:
-                texts.append(f"Question:\n{row['question']}")
-            for j, model in enumerate(shuffled_cols):
-                texts.append(f"\Model {j}:\n{row[model]}\n")
-        texts = (
-            "Current Axes:\n"
-            + "\n".join(self.axes)
-            + "\n\nMisclassified Responses:"
-            + "\n".join(texts)
-        )
-        response = get_llm_output(
-            texts, model=self.args.proposer_model, system_prompt=systems_prompt
-        ).replace("**", "")
-        axis_response = self.extract_axes(response)
-        print(axis_response)
-        return (
-            response,
-            axis_response,
-            {
-                "proposal_prompt": self.args.proposer_prompt,
-                "response": response,
-                "axis_response": axis_response,
-            },
-        )
-
-
-class LLMProposerIterationNewOnly(LLMProposerFixed):
+    """
+    Proposes new axes (vibes) given the existing axes and the misclassified responses
+    """
 
     def __init__(self, args: Dict, axes: List[str]):
         super().__init__(args)
