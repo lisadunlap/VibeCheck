@@ -50,6 +50,16 @@ The format should be
 If there are no substantive differences between the outputs, please respond with only "No differences found."
 """
 
+proposer_prompt_freeform_summarization_objective = """
+You are a machine learning researcher trying to analyze the differences between the behaviors of two llms by finding objective differences in their responses to the same set of questions for a summarization task. Focus on observable, measurable differences in what content they include, their structure, and their linguistic patterns. Write down as many objective differences as you can find between the two outputs. Please format your differences as a list of axes of variation and differences between the two outputs. Each axis should represent a concrete, measurable property that can be identified consistently across different summaries. For example: length, use of direct quotes, inclusion of specific types of information, sentence structure patterns, etc.
+
+The format should be
+- {{axis_1}}: {{difference}}
+- {{axis_2}}: {{difference}}
+    
+If there are no substantive differences between the outputs, please respond with only "No differences found."
+"""
+
 proposer_prompt_freeform_vlm = """
 You are a machine learning researcher trying to figure out the major differences between the behaviors of two VLM by finding differences in their responses to the same set of VQA questions (the images have been removed). Write down as many differences as you can find between the two outputs. Please format your differences as a list of axes of variation and differences between the two outputs. Try to give axes which represent a property that a human could easily interpret and they could categorize a pair of text outputs as higher or lower on that specific axis. If the axis is related to a specific kind of question (e.g. math, coding, creative writing), please specify that in the axis name.
 

@@ -134,7 +134,6 @@ class RelativeRanker(Ranker):
             elif score[0] == "B" or score[0] == "b":
                 return -1
             elif score[0] == "N/A" or score[0] == "n/a":
-                print("N/A")
                 return 0
             elif score[0] == "unsure" or score[0] == "Unsure":
                 print("Unsure")
@@ -173,13 +172,33 @@ class RelativeRanker(Ranker):
         {prompt}
         """
 
-        judge_systems_prompt = """You are a fair and unbiased judge. Your task is to compare the ouputs of two lamgauge models (A and B) on a given axis, which contains a description of what it means for an output to be high and low on that axis. If you had to choose which output is higher on the axis, which would you choose? Please respond with which model response you think is higher on the axis and explain your reasoning. Avoid any position biase and e as objective as possible. If the response A is higher on the axis, respond with "A", if response B is higher, respond with "B", and if they are roughly equal on this axis or this axis, return "equal". If this axis not apply to these outputs (e.g. the axis is about code quality but the prompt provided is not a coding question), return "N/A". If you are unsure of the meaning of the axis, return "unsure". Use the following format for your response:
+#         judge_systems_prompt = """You are a fair and unbiased judge. Your task is to compare the ouputs of two lamgauge models (A and B) on a given axis, which contains a description of what it means for an output to be high and low on that axis. If you had to choose which output is higher on the axis, which would you choose? Please respond with which model response you think is higher on the axis and explain your reasoning. Note that being high or low on the axis does not relate to how good or bad the reponse is, the sole focus is to put an ordering on the responses if they differ on this axis. Avoid any position biase and be as objective as possible. If the response A is higher on the axis, respond with "A", if response B is higher, respond with "B", and if they are roughly equal on this axis or this axis, return "equal". If this axis not apply to these outputs (e.g. the axis is about code quality but the prompt provided is not a coding question), return "N/A". If you are unsure of the meaning of the axis, return "unsure". Use the following format for your response:
+
+# Analysis: {{reasoning}}
+# Model: {{A, B, equal, N/A, or unsure}}
+
+# Remember to be as objective as possible and strictly adhere to the response format.
+# """
+
+        judge_systems_prompt = """You are a fair and unbiased judge. Your task is to compare the outputs of two language models (A and B) on a given axis. Each axis contains a description explaining what it means for an output to be high or low. Your goal is to decide which model’s output is higher on the axis.
+When comparing the outputs, consider the following:
+
+	•	Being high or low on the axis does not indicate how good or bad the response is. Your sole focus is to order the responses based on how they differ on this axis.
+	•	Avoid any position bias and remain as objective as possible.
+
+Instructions:
+	•	If Response A aligns with the 'high' description more than Response B, respond with “A”.
+	•	If Response B aligns with the 'high' description more than Response A, respond with “B”.
+	•	If the responses are roughly equal on the axis, respond with “equal”.
+	•	If the axis does not apply to these outputs (e.g., the axis is about code quality, but the prompt is not related to coding), respond with “N/A”.
+	•	If you are unsure about the meaning of the axis, respond with “unsure”.
+
+Use the following format for your response:
 
 Analysis: {{reasoning}}
 Model: {{A, B, equal, N/A, or unsure}}
 
-Remember to be as objective as possible and strictly adhere to the response format.
-"""
+Remember to be as objective as possible and strictly adhere to the response format."""
 
         judge_outputs = []
         for judge in self.args.judges:
@@ -427,8 +446,76 @@ Remember to be as objective as possible and strictly adhere to the response form
 
         # Log the plot to W&B
         fig = ax.get_figure()
-        wandb.log({f"{axis.split(':')[0]}_scores": wandb.Image(fig)})
+        wandb.log({f"Juge Scores/{axis.split(':')[0]} Score Counts": wandb.Image(fig)})
         plt.close(fig)
+
+class RelativeRanker2(RelativeRanker):
+    """
+    Scores by saying which model fits the description better
+    """
+
+    def get_score(self, row, axis, dummy_eval=False):
+        if dummy_eval:
+            rand = np.random.rand()
+            if rand < 0.33:
+                return [
+                    ["Analysis: Because I said so\nModel: A"] * len(self.args.models)
+                    for i in range(self.num_judges)
+                ]
+            elif rand < 0.66:
+                return [
+                    ["Analysis: Because I said so\nModel: B"] * len(self.args.models)
+                    for i in range(self.num_judges)
+                ]
+            else:
+                return [
+                    ["Analysis: Because I said so\nModel: N/A"] * len(self.args.models)
+                    for i in range(self.num_judges)
+                ]
+
+        prompt = """Property = {axis}
+
+{prompt}
+"""
+
+        judge_systems_prompt = """You are a fair and unbiased judge. Your task is to compare the outputs of two language models (A and B) on a given propoery. Which repose better aligns more with the given property, A, B, or equal?
+When comparing the outputs, consider the following:
+
+	•	Your sole focus is to determine which response better aligns with the given property, NOT how good or bad the response is.
+	•	Avoid any position bias and remain as objective as possible.
+    •	Consider what the property means and how it applies to the outputs. Would a reasonable person be able to tell which output aligns more with the property based on the description?
+
+Instructions:
+	•	If Response A aligns with the property more than Response B, respond with “A”.
+    •	If Response B aligns with the property more than Response A, respond with “B”.
+	•	If the responses are roughly equal on the property, respond with “equal”.
+	•	If the property does not apply to these outputs (e.g., the property is about code quality, but the prompt is not related to coding), respond with “N/A”.
+	•	If you are unsure about the meaning of the property, respond with “unsure”. Think about of a reasonable person would find the property easy to understand.
+
+A group of humans should agree with your decision. Use the following format for your response:
+Model: {{A, B, equal, N/A, or unsure}}
+
+Remember to be as objective as possible and strictly adhere to the response format."""
+
+        judge_outputs = []
+        for judge in self.args.judges:
+            # print(f"Getting judgement for Judge = {judge}")
+            model_outputs = []
+            for model in self.args.models:
+                model_a, model_b = model, [m for m in self.args.models if m != model][0]
+                if "low" in axis.lower().split("high:")[1].split("low:")[0].replace("", ""):
+                    print("Error parsing axis", axis)
+                scoring_prompt = prompt.format(
+                    axis=axis.lower().split("high:")[1].split("low:")[0].replace("", "").strip(),
+                    prompt=f"Prompt: {row['question']}\nOutput A: {row[model_a]}\nOutput B: {row[model_b]}",
+                )
+                output_a = get_llm_output(
+                    scoring_prompt, model=judge, system_prompt=judge_systems_prompt
+                )
+                # score = self.parse_output(output_a)
+                model_outputs.append(output_a)
+            judge_outputs.append(model_outputs)
+        return judge_outputs
 
 
 class PreferenceRanker(RelativeRanker):
