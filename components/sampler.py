@@ -1,29 +1,14 @@
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
-import torch.optim as optim
-
 import numpy as np
-import pandas as pd
-import wandb
-import os
-from tqdm import tqdm
-import clip
-import torchvision.transforms as transforms
-from PIL import Image
-import random
 import re
 import logging
 
-from sklearn.cluster import DBSCAN, KMeans, AgglomerativeClustering, SpectralClustering
+from sklearn.cluster import AgglomerativeClustering
 from scipy.spatial.distance import cdist
 from InstructorEmbedding import INSTRUCTOR
 
 logging.basicConfig(level=logging.INFO)
-import torch
-import torchvision
+from serve.utils_llm import get_llm_output
 
-from serve.utils_llm import get_llm_output, get_llm_embedding
 
 def get_example_prompt(prompts):
     """
@@ -41,13 +26,13 @@ def get_example_prompt(prompts):
     prompt = example_generation_prompt.format(prompts="\n".join(prompts[:5]))
     response = get_llm_output(prompt, model="gpt-4")
     return {"example_generation_prompt": prompt, "response": response}
-    
+
 
 class Sampler:
 
     def __init__(self, args):
         self.args = args
-    
+
     def sample(self, df):
         print(df.columns)
         if self.args.group_column:
@@ -61,13 +46,15 @@ class Sampler:
             df["topic_label"] = [0] * len(df)
             df["embedding"] = [0] * len(df)
             return df, {}
-        
+
+
 def cluster_hierarchical(embeddings, n_clusters=5):
     print(embeddings.shape)
     clustering = AgglomerativeClustering(n_clusters=n_clusters).fit(embeddings)
     unique_labels = np.unique(clustering.labels_)
     print({i: np.sum(clustering.labels_ == i) for i in unique_labels})
     return clustering.labels_
+
 
 # This is if you want to first cluster the questions and then summarize the clusters
 class ClusterSampler(Sampler):
@@ -90,24 +77,37 @@ class ClusterSampler(Sampler):
         Cluster {{cluster name}}: {{cluster description}}
         """
         return get_llm_output(prompt, model=model)
-    
+
     def parse_clusters(self, cluster_strings):
         cluster_dict = {}
         # Pattern includes optional numeric prefixes (e.g., "1. "), optional symbols (-, *), and the word 'Cluster'
-        pattern = re.compile(r'(?:\d+\.\s*)?(?:[-*]\s*)?Cluster (\w+):\s*(.*)')
-        
+        pattern = re.compile(r"(?:\d+\.\s*)?(?:[-*]\s*)?Cluster (\w+):\s*(.*)")
+
         for line in cluster_strings.splitlines():
             match = pattern.match(line)
             if match:
                 cluster_name, summary = match.groups()
                 cluster_dict[cluster_name] = summary
-        
+
         return cluster_dict
 
-    def summarize_cluster(self, labels, num_clusters, embeddings, texts, K, prompt=None):
+    def summarize_cluster(
+        self, labels, num_clusters, embeddings, texts, K, prompt=None
+    ):
         all_texts = []
         # create list of nonsense labels to anonymize the cluster
-        anon_labels = ["fds", "nhg", "jkl", "qwe", "rty", "uio", "zxc", "vbn", "mnb", "poi"]
+        anon_labels = [
+            "fds",
+            "nhg",
+            "jkl",
+            "qwe",
+            "rty",
+            "uio",
+            "zxc",
+            "vbn",
+            "mnb",
+            "poi",
+        ]
         centroids = []
         for custer_idx in range(num_clusters):
             cluster = np.where(labels == custer_idx)[0]
@@ -118,7 +118,7 @@ class ClusterSampler(Sampler):
             centroids.append(centroid)
 
             # Find the K texts closest to the centroid
-            distances = cdist([centroid], cluster_embeddings, metric='cosine')[0]
+            distances = cdist([centroid], cluster_embeddings, metric="cosine")[0]
             closest_indices = np.argsort(distances)[:50]
             # randomly sample 5 texts
             np.random.shuffle(closest_indices)
@@ -126,7 +126,9 @@ class ClusterSampler(Sampler):
 
             # Summarize these texts
             selected_texts = [sub_texts[i] for i in closest_indices]
-            all_texts += [f"Cluster {anon_labels[custer_idx]}:\n" + "\n".join(selected_texts)]
+            all_texts += [
+                f"Cluster {anon_labels[custer_idx]}:\n" + "\n".join(selected_texts)
+            ]
         # # shuffle all_texts
         # np.random.shuffle(all_texts)
         summarized_text = self.summarize_group_text("\n".join(all_texts))
@@ -135,71 +137,95 @@ class ClusterSampler(Sampler):
 
     def sample(self, df):
         print(f"------------- Cluster Sampling -------------")
-        model = INSTRUCTOR('hkunlp/instructor-xl')
+        model = INSTRUCTOR("hkunlp/instructor-xl")
         instruction = "Cluster based on question topics and summarize the cluster."
-        df["embedding"] = df["question"].apply(lambda x: model.encode([[instruction,x]])[0])
+        df["embedding"] = df["question"].apply(
+            lambda x: model.encode([[instruction, x]])[0]
+        )
         embeddings = np.stack(df["embedding"].values)
         n_clusters = self.args.num_topic_clusters
         labels = cluster_hierarchical(embeddings, n_clusters=n_clusters)
-        anon_labels = ["fds", "nhg", "jkl", "qwe", "rty", "uio", "zxc", "vbn", "mnb", "poi"][:n_clusters]
-        centroids, summary, summary_dict = self.summarize_cluster(labels, n_clusters, embeddings, df["question"].tolist(), K=10)
+        anon_labels = [
+            "fds",
+            "nhg",
+            "jkl",
+            "qwe",
+            "rty",
+            "uio",
+            "zxc",
+            "vbn",
+            "mnb",
+            "poi",
+        ][:n_clusters]
+        centroids, summary, summary_dict = self.summarize_cluster(
+            labels, n_clusters, embeddings, df["question"].tolist(), K=10
+        )
         print(summary_dict)
-        topic_centroids = {"centroids": centroids, "summary": list(summary_dict.values())}
-        df['topic'] = [summary_dict[anon_labels[l]] for l in labels]
+        topic_centroids = {
+            "centroids": centroids,
+            "summary": list(summary_dict.values()),
+        }
+        df["topic"] = [summary_dict[anon_labels[l]] for l in labels]
         df["topic_label"] = labels
         return df, topic_centroids
+
 
 def match_set_to_centroids(df, topic_centroids={}, labels=None, embeddings=None):
     if not topic_centroids:
         return ["all"] * len(df)
-    
+
     print(f"------------- Matching to Centroids -------------")
     print(f"Topic Centroids: {topic_centroids}")
     print(f"Labels: {labels}")
-    print(f"Embeddings: {embeddings.shape}")    
+    print(f"Embeddings: {embeddings.shape}")
     # Initialize the embedding model
-    model = INSTRUCTOR('hkunlp/instructor-xl')
+    model = INSTRUCTOR("hkunlp/instructor-xl")
     instruction = "Cluster based on question topics and summarize the cluster."
-    
+
     # Embed the questions
-    df["embedding"] = df["question"].apply(lambda x: model.encode([[instruction, x]])[0])
+    df["embedding"] = df["question"].apply(
+        lambda x: model.encode([[instruction, x]])[0]
+    )
     new_embeddings = np.stack(df["embedding"].values)
     print(f"Emeddings: {new_embeddings.shape} {embeddings.shape}")
-    
+
     # Names of clusters from topic_centroids
-    names = topic_centroids['summary']
+    names = topic_centroids["summary"]
 
     # Match each new embedding to the cluster by calculating distances to all points in each cluster
     assignments = []
     for new_emb in new_embeddings:
-        min_avg_distance = float('inf')
+        min_avg_distance = float("inf")
         assigned_cluster = None
         for cluster_idx in range(len(names)):
             cluster_points = embeddings[labels == cluster_idx]
-            distances = cdist([new_emb], cluster_points, metric='euclidean')
+            distances = cdist([new_emb], cluster_points, metric="euclidean")
             avg_distance = np.mean(distances)
             if avg_distance < min_avg_distance:
                 min_avg_distance = avg_distance
                 assigned_cluster = names[cluster_idx]
         assignments.append(assigned_cluster)
-    
+
     print(assignments)
     return assignments
+
 
 import re
 import json
 import ast
+
+
 def extract_final_list(text):
     # Use regular expression to find the list in the text
-    pattern = re.compile(r'\[\s*([^\]]+)\s*\]', re.DOTALL)
+    pattern = re.compile(r"\[\s*([^\]]+)\s*\]", re.DOTALL)
     match = pattern.search(text)
-    
+
     if match:
         list_str = match.group(1)
-        
+
         # Split the list elements and strip any extra whitespace
-        parsed_list = [item.strip() for item in list_str.split(',')]
-        
+        parsed_list = [item.strip() for item in list_str.split(",")]
+
         return parsed_list
     else:
         print("No list found in the text.")

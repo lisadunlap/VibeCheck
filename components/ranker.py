@@ -5,14 +5,9 @@ import numpy as np
 import pandas as pd
 import seaborn as sns
 from matplotlib import pyplot as plt
-from scipy.stats import ttest_ind, ttest_rel, mode
-from sklearn.metrics import roc_auc_score
-from tqdm import tqdm, trange
+from scipy.stats import ttest_rel, mode
+from tqdm import tqdm
 import re
-import ast
-import itertools
-import plotly.graph_objects as go
-import plotly.express as px
 
 import wandb
 from serve.utils_llm import get_llm_output
@@ -172,13 +167,13 @@ class RelativeRanker(Ranker):
         {prompt}
         """
 
-#         judge_systems_prompt = """You are a fair and unbiased judge. Your task is to compare the ouputs of two lamgauge models (A and B) on a given axis, which contains a description of what it means for an output to be high and low on that axis. If you had to choose which output is higher on the axis, which would you choose? Please respond with which model response you think is higher on the axis and explain your reasoning. Note that being high or low on the axis does not relate to how good or bad the reponse is, the sole focus is to put an ordering on the responses if they differ on this axis. Avoid any position biase and be as objective as possible. If the response A is higher on the axis, respond with "A", if response B is higher, respond with "B", and if they are roughly equal on this axis or this axis, return "equal". If this axis not apply to these outputs (e.g. the axis is about code quality but the prompt provided is not a coding question), return "N/A". If you are unsure of the meaning of the axis, return "unsure". Use the following format for your response:
+        #         judge_systems_prompt = """You are a fair and unbiased judge. Your task is to compare the ouputs of two lamgauge models (A and B) on a given axis, which contains a description of what it means for an output to be high and low on that axis. If you had to choose which output is higher on the axis, which would you choose? Please respond with which model response you think is higher on the axis and explain your reasoning. Note that being high or low on the axis does not relate to how good or bad the reponse is, the sole focus is to put an ordering on the responses if they differ on this axis. Avoid any position biase and be as objective as possible. If the response A is higher on the axis, respond with "A", if response B is higher, respond with "B", and if they are roughly equal on this axis or this axis, return "equal". If this axis not apply to these outputs (e.g. the axis is about code quality but the prompt provided is not a coding question), return "N/A". If you are unsure of the meaning of the axis, return "unsure". Use the following format for your response:
 
-# Analysis: {{reasoning}}
-# Model: {{A, B, equal, N/A, or unsure}}
+        # Analysis: {{reasoning}}
+        # Model: {{A, B, equal, N/A, or unsure}}
 
-# Remember to be as objective as possible and strictly adhere to the response format.
-# """
+        # Remember to be as objective as possible and strictly adhere to the response format.
+        # """
 
         judge_systems_prompt = """You are a fair and unbiased judge. Your task is to compare the outputs of two language models (A and B) on a given axis. Each axis contains a description explaining what it means for an output to be high or low. Your goal is to decide which model’s output is higher on the axis.
 When comparing the outputs, consider the following:
@@ -449,6 +444,7 @@ Remember to be as objective as possible and strictly adhere to the response form
         wandb.log({f"Juge Scores/{axis.split(':')[0]} Score Counts": wandb.Image(fig)})
         plt.close(fig)
 
+
 class RelativeRanker2(RelativeRanker):
     """
     Scores by saying which model fits the description better
@@ -503,10 +499,16 @@ Remember to be as objective as possible and strictly adhere to the response form
             model_outputs = []
             for model in self.args.models:
                 model_a, model_b = model, [m for m in self.args.models if m != model][0]
-                if "low" in axis.lower().split("high:")[1].split("low:")[0].replace("", ""):
+                if "low" in axis.lower().split("high:")[1].split("low:")[0].replace(
+                    "", ""
+                ):
                     print("Error parsing axis", axis)
                 scoring_prompt = prompt.format(
-                    axis=axis.lower().split("high:")[1].split("low:")[0].replace("", "").strip(),
+                    axis=axis.lower()
+                    .split("high:")[1]
+                    .split("low:")[0]
+                    .replace("", "")
+                    .strip(),
                     prompt=f"Prompt: {row['question']}\nOutput A: {row[model_a]}\nOutput B: {row[model_b]}",
                 )
                 output_a = get_llm_output(

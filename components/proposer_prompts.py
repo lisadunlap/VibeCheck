@@ -16,7 +16,7 @@ If there are no substantive differences between the outputs, please respond with
 # The format should be
 # - {{axis_1}}: {{difference}}
 # - {{axis_2}}: {{difference}}
-    
+
 # If there are no substantive differences between the outputs, please respond with only "No differences found."
 # """
 

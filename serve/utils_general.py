@@ -5,6 +5,7 @@ import lmdb
 from PIL import Image
 import pickle
 
+
 def hash_key(key) -> str:
     return hashlib.sha256(key.encode()).hexdigest()
 
@@ -17,10 +18,12 @@ def get_from_cache(key: str, env: lmdb.Environment) -> Optional[str]:
         return value.decode()
     return None
 
+
 def save_to_cache(key: str, value: str, env: lmdb.Environment):
     with env.begin(write=True) as txn:
         hashed_key = hash_key(key)
         txn.put(hashed_key.encode(), value.encode())
+
 
 def save_emb_to_cache(key: str, value, env: lmdb.Environment):
     with env.begin(write=True) as txn:
@@ -28,6 +31,7 @@ def save_emb_to_cache(key: str, value, env: lmdb.Environment):
         # Use pickle to serialize the value
         serialized_value = pickle.dumps(value)
         txn.put(hashed_key.encode(), serialized_value)
+
 
 def get_emb_from_cache(key: str, env: lmdb.Environment):
     with env.begin(write=False) as txn:

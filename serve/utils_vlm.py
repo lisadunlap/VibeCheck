@@ -21,9 +21,11 @@ if not os.path.exists(VLM_CACHE_FILE):
 vlm_cache = lmdb.open(VLM_CACHE_FILE, map_size=int(1e11))
 openai.api_key = os.environ["OPENAI_API_KEY"]
 
+
 def get_image_base64(image_path):
-    with open(image_path, 'rb') as file:
-        return base64.b64encode(file.read()).decode('utf-8')
+    with open(image_path, "rb") as file:
+        return base64.b64encode(file.read()).decode("utf-8")
+
 
 def get_vlm_output(image: str, prompt: str, model: str) -> str:
     key = json.dumps([model, image, prompt])
@@ -58,11 +60,16 @@ def get_vlm_output(image: str, prompt: str, model: str) -> str:
                     "role": "user",
                     "content": [
                         {"type": "text", "text": prompt},
-                        {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"}}
-                    ]
+                        {
+                            "type": "image_url",
+                            "image_url": {
+                                "url": f"data:image/jpeg;base64,{base64_image}"
+                            },
+                        },
+                    ],
                 }
             ],
-            "max_tokens": 300
+            "max_tokens": 300,
         }
 
         try:
