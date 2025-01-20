@@ -31,21 +31,19 @@ def rank_axes(vibes, df, models, position_matters=False):
     """
     Ranks the two model outputs across the given vibes (axes) using LOTUS ranking prompts.
     """
-
-    judge_systems_prompt = """You are a fair and unbiased judge. Your task is to compare the outputs of two language models (A and B) on a given property. Which response better aligns more with the given property, A, B, or equal?
+    judge_systems_prompt = """You are a fair and unbiased judge. Your task is to compare the outputs of two language models (A and B) on a given property with a definition of what it means to be higher on the given property. Which response is higher on the given property, A, B, or equal?
 When comparing the outputs, consider the following:
 
-- Your sole focus is to determine which response better aligns with the given property, NOT how good or bad the response is.
+- Your sole focus is to determine which response is higher on the given property provided the definition of what it means to be higher on the given property, NOT how good or bad the response is.
 - Avoid any position bias and remain as objective as possible.
-- Consider what the property means and how it applies to the outputs. Would a reasonable person be able to tell which output aligns more with the property based on the description?
+- Consider what the property means and how it applies to the outputs. Would a reasonable person be able to tell which response is higher on the given property based on the definition?
 
 Instructions:
-- If Response A aligns with the property more than Response B, respond with “A”.
-- If Response B aligns with the property more than Response A, respond with “B”.
+- If Response A is higher on the given property than Response B, respond with “A”.
+- If Response B is higher on the given property than Response A, respond with “B”.
 - If the responses are roughly equal on the property, respond with “equal”.
 - If the property does not apply to these outputs (e.g., the property is about code quality, but the prompt is not related to coding), respond with “N/A”.
-- If you are unsure about the meaning of the property, respond with “unsure”. 
-Think about whether a reasonable person would find the property easy to understand.
+- If you think a reasonable person would be unsure about the meaning of the property (it is not well defined or the low and high descriptions are not mutually exclusive), respond with “unsure”. 
 
 A group of humans should agree with your decision. 
 Use the following format for your response:
@@ -86,14 +84,10 @@ Remember to be as objective as possible and strictly adhere to the response form
             axis=1
         )
 
-    print(f"Len of df: {len(vibe_df)} num of unique vibes: {len(vibe_df['vibe'].unique())}")
     ranker_1 = vibe_df.sem_map(ranker_prompt1, return_raw_outputs=True, suffix="ranker_output_1")
     print(f"Len of ranker_1: {len(ranker_1)}, num of unique vibes: {len(ranker_1['vibe'].unique())}")
     vibe_df = vibe_df.merge(ranker_1[["vibe", "question", models[0], models[1], "preference", "ranker_output_1", "raw_outputranker_output_1"]], on=["vibe", "question", models[0], models[1], "preference"], how="left")
     vibe_df["ranker_output_1"] = vibe_df["ranker_output_1"].apply(ranker_postprocess)
-    print(vibe_df.columns)
-    wandb.log({"ranker_1_results": wandb.Table(dataframe=vibe_df[["question", models[0], models[1], "vibe", "preference", "ranker_output_1", "raw_outputranker_output_1"]])})
-    print(vibe_df.groupby("vibe")[["ranker_output_1"]].mean())
     if position_matters:
         ranker_2 = vibe_df.sem_map(ranker_prompt2, return_raw_outputs=True, suffix="ranker_output_2")
         vibe_df = vibe_df.merge(ranker_2[["question", models[0], models[1], "preference", "ranker_output_2"]], on=["question", models[0], models[1], "preference"], how="left")
@@ -109,11 +103,12 @@ Remember to be as objective as possible and strictly adhere to the response form
 
     return vibe_df
 
-def main(data_path, models, num_proposal_samples=30, num_final_vibes=10, test=False):
+def main(data_path, models, num_proposal_samples=30, num_final_vibes=10, test=False, position_matters=False, project_name="vibecheck"):
     # Initialize wandb
-    wandb.init(project="vibecheck", name="model_analysis")
+    wandb.init(project=project_name, name=f"{models[0]}_vs_{models[1]}", save_code=True)
 
     # Initialize LOTUS
+    # TODO: create PR in LOTUS repo to fix cahcing problems
     cache_config = CacheConfig(cache_type=CacheType.SQLITE, max_size=1000)
     cache = CacheFactory.create_cache(cache_config)
     lm = LM(model="gpt-4o", cache=cache)
@@ -127,7 +122,25 @@ def main(data_path, models, num_proposal_samples=30, num_final_vibes=10, test=Fa
     df = df[df["preference"].isin(models)].reset_index(drop=True)
 
     print(f"Preference Counts: {df['preference'].value_counts().to_dict()}")
-    wandb.log({"preference_distribution": wandb.Table(dataframe=df['preference'].value_counts().reset_index())})
+    wandb.summary["preference_counts"] = df['preference'].value_counts().to_dict()
+    wandb.summary["data_size"] = len(df)
+
+    # Create bar plot of preference distribution
+    pref_dist = df['preference'].value_counts()
+    fig = go.Figure(data=[
+        go.Bar(
+            x=pref_dist.index,
+            y=pref_dist.values,
+            marker_color='#2ecc71'
+        )
+    ])
+    fig.update_layout(
+        title='Model Preference Distribution',
+        xaxis_title='Model',
+        yaxis_title='Count',
+        template='plotly_white'
+    )
+    wandb.log({"preference_distribution": wandb.Html(fig.to_html())})
 
     # Create combined responses
     df["combined_responses"] = df.apply(
@@ -164,7 +177,6 @@ If there are no substantive differences between the outputs, please respond with
 
     # Cluster and reduce axes
     results = results.sem_index("differences", "differences_index").sem_cluster_by("differences", 1)
-    # TODO: create PR in LOTUS repo to fix this
     summaries = results.sem_agg(create_reduce_prompt(num_final_vibes), group_by="cluster_id", suffix="reduced axes")
     # summaries = results.sem_agg(create_reduce_prompt(num_final_vibes), suffix="reduced axes")
     summaries["reduced axes parsed"] = summaries["reduced axes"].apply(parse_axes)
@@ -181,9 +193,9 @@ If there are no substantive differences between the outputs, please respond with
     lm = LM(model="gpt-4o-mini", cache=cache)
     lotus.settings.configure(lm=lm, enable_cache=False)
     if test:
-        vibe_df = rank_axes(vibes[:3], df, models)
+        vibe_df = rank_axes(vibes[:3], df, models, position_matters=position_matters)
     else:
-        vibe_df = rank_axes(vibes, df, models)
+        vibe_df = rank_axes(vibes, df, models, position_matters=position_matters)
 
     wandb.log({"ranker_results": wandb.Table(dataframe=vibe_df)})
     vibe_df.to_csv("vibe_df.csv", index=False)
@@ -439,6 +451,8 @@ if __name__ == "__main__":
                         help='Rerun ranker with different positions')
     parser.add_argument('--num_final_vibes', type=int, default=10,
                         help='Number of final vibes to use for analysis')
+    parser.add_argument('--solver', type=str, default='elasticnet',
+                        help='Solver to use for logistic regression (standard, lasso, elasticnet)')
 
     args = parser.parse_args()
-    main(args.data_path, args.models, args.num_samples, args.num_final_vibes, args.test)
+    main(args.data_path, args.models, args.num_proposal_samples, args.num_final_vibes, args.test, args.position_matters)

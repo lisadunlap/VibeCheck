@@ -7,6 +7,7 @@ from scipy import stats
 from sklearn.linear_model import LogisticRegression
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import accuracy_score
+from typing import List
 
 def parse_bullets(text: str):
     """
@@ -28,24 +29,24 @@ def proposer_postprocess(text: str):
     return bullets
 
 def create_reduce_prompt(num_reduced_axes: int):
-    """
-    Create the prompt for reducing axes.
-    """
-    return f"""Below is a list of axes with a description of what makes a piece of text low or high on this axis. I would like to summarize this list to at most {num_reduced_axes} representative axes.
+    return f"""Below is a list of axes with a description of what makes a piece of text low or high on this axis. I would like to summarize this list to at most {num_reduced_axes} representative axes with concise descriptions.
 
 Here is the list of axes:
 {{differences}}
 
-These axes should contain only one concept and should be human interpretable. Some examples of bad axes include:
-- "Configuration Clarity: High: Clearly defined structure and purpose. Low: Vaguely defined, minimal purpose."
-- "Language and Communication: High: Varied/precise, complex structure. Low: Straightforward, simple or general language."
-- "Content Quality: High: High quality, engaging, informative. Low: Low quality, unengaging, uninformative."
+These axes should contain only one concept and should be human interpretable. The axis title should be a single concept (does not contain "and", "or", etc.). The descriptions of what makes a piece of text high or low on the axis should be unambiguous and mutually exclusive.
 
-Some examples of good axes include:
-- "Complexity: High: Complex, multi-layered, intricate. Low: Simple, straightforward, easy to understand."
-- "Efficiency (coding): High: Code optimized for runtime, minimal memory usage. Low: Code inefficient, high memory usage."
+Some examples of BAD axes include:
+- "Configuration Clarity: High: Clearly defined structure and purpose. Low: Vaguely defined, minimal purpose." - unclear what the axis is about
+- "Language and Communication: High: Varied/precise, complex structure. Low: Straightforward, simple or general language." - describes two separate axes, description is not mutually exclusive. Axis title contains "and", indicating multiple axes.
+- "Content Quality: High: High quality, engaging, informative. Low: Low quality, unengaging, uninformative." - this describes multiple axes and "quality" is not well defined
 
-Please return the simplified list of <={num_reduced_axes} axes with any redundant axes removed and the descriptions of what makes a piece of text low or high on this axis simplified.
+Some examples of GOOD axes include:
+- "Formality: High: Informal language. Low: Formal language."
+- "Tone: High: Sarcastic tone. Low: Serious tone."
+- "Efficiency (coding): High: Optimized for runtime and memory. Low: Brute force algorithms with high memory usage."
+
+Make sure the high and low descriptions are as concise as possible. Please return the simplified list of <={num_reduced_axes} axes with any similar, unclear, or uncommon axes removed.
 
 Please maintain the format of the original axes and return a numbered list. Each element should be structured as follows:
 "{{{{axis_name}}}}: High: {{{{high description}}}} Low: {{{{low description}}}}" 
@@ -110,10 +111,27 @@ def parse_vibe_description(vibe_text: str) -> pd.Series:
     low_desc = high_low_parts[1].strip()
     return pd.Series({'name': name, 'high_desc': high_desc, 'low_desc': low_desc})
 
-def train_and_evaluate_model(X, y, feature_names, split_train_test=True):
+def train_and_evaluate_model(X: np.ndarray, y: np.ndarray, feature_names: List[str], split_train_test:bool=True, solver: str='elasticnet'):
     """
     Train a logistic regression model on (X, y) and compute accuracy and p-values for each feature.
+    
+    Args:
+        X: Feature matrix
+        y: Target values
+        feature_names: Names of features
+        split_train_test: Whether to split data into train/test sets
+        solver: Type of regularization to use ('standard', 'lasso', or 'elasticnet')
     """
+    # Configure model based on solver type
+    if solver == 'standard':
+        model = LogisticRegression(penalty='l2', random_state=42)
+    elif solver == 'lasso':
+        model = LogisticRegression(penalty='l1', solver='liblinear', random_state=42)
+    elif solver == 'elasticnet':
+        model = LogisticRegression(penalty='elasticnet', solver='saga', l1_ratio=0.5, random_state=42)
+    else:
+        raise ValueError("solver must be one of: 'standard', 'lasso', 'elasticnet'")
+
     # Split and train
     if split_train_test:
         X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.5, random_state=42)
@@ -122,12 +140,11 @@ def train_and_evaluate_model(X, y, feature_names, split_train_test=True):
         X_test = X
         y_train = y
         y_test = y
-    model = LogisticRegression()
     model.fit(X_train, y_train)
 
     # Calculate accuracy
     accuracy = accuracy_score(y_test, model.predict(X_test))
-    print(f"Accuracy: {accuracy}")
+    print(f"Accuracy ({solver}): {accuracy}")
 
     # Calculate p-values
     X_with_intercept = np.column_stack([np.ones(len(X_train)), X_train])
@@ -146,45 +163,6 @@ def train_and_evaluate_model(X, y, feature_names, split_train_test=True):
     })
 
     return model, coef_df, accuracy
-
-# def train_and_evaluate_model(X, y, feature_names, model_name=""):
-#     """
-#     Train a ridge regression model on (X, y) and compute R² and p-values for each feature.
-#     """
-#     model = Ridge(alpha=1.0)  # alpha is the regularization strength
-#     model.fit(X, y)
-
-#     # Calculate R² score
-#     r2_score = model.score(X, y)
-#     print(f"{model_name} R² Score: {r2_score}")
-
-#     # Calculate p-values
-#     n = X.shape[0]
-#     p = X.shape[1]
-    
-#     # Calculate MSE and dof
-#     y_pred = model.predict(X)
-#     mse = np.sum((y - y_pred) ** 2) / (n - p - 1)
-    
-#     # Calculate variance-covariance matrix
-#     X_normalized = X - X.mean(axis=0)
-#     var_covar_matrix = mse * np.linalg.inv(X_normalized.T @ X_normalized + model.alpha * np.eye(p))
-    
-#     # Calculate standard errors and t-statistics
-#     standard_errors = np.sqrt(np.diag(var_covar_matrix))
-#     t_stats = model.coef_ / standard_errors
-    
-#     # Calculate p-values using t-distribution
-#     p_values = 2 * (1 - stats.t.cdf(abs(t_stats), df=n-p-1))
-
-#     # Create dataframe with feature names, coefficients, and p-values
-#     coef_df = pd.DataFrame({
-#         "vibe": feature_names,
-#         "coef": model.coef_,
-#         "p_value": p_values
-#     })
-
-#     return model, coef_df, r2_score
 
 def get_feature_df(vibe_df, split="train"):
     """
