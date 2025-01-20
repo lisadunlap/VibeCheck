@@ -17,11 +17,11 @@ from plotly.subplots import make_subplots
 from utils import (
     parse_bullets,
     proposer_postprocess,
-    create_reduce_prompt,
+    # create_reduce_prompt,
     parse_axes,
     get_pref_score,
     # rank_axes,
-    parse_vibe_description,
+    # parse_vibe_description,
     train_and_evaluate_model,
     get_feature_df,
     ranker_postprocess,
@@ -31,24 +31,26 @@ def rank_axes(vibes, df, models, position_matters=False):
     """
     Ranks the two model outputs across the given vibes (axes) using LOTUS ranking prompts.
     """
-    judge_systems_prompt = """You are a fair and unbiased judge. Your task is to compare the outputs of two language models (A and B) on a given property with a definition of what it means to be higher on the given property. Which response is higher on the given property, A, B, or equal?
+    judge_systems_prompt = """You are a fair and unbiased judge. Your task is to compare the outputs of two language models (A and B) on a given propoery. Which repose better aligns more with the given property, A, B, or equal?
 When comparing the outputs, consider the following:
 
-- Your sole focus is to determine which response is higher on the given property provided the definition of what it means to be higher on the given property, NOT how good or bad the response is.
-- Avoid any position bias and remain as objective as possible.
-- Consider what the property means and how it applies to the outputs. Would a reasonable person be able to tell which response is higher on the given property based on the definition?
+	•	Your sole focus is to determine which response better aligns with the given property, NOT how good or bad the response is.
+	•	Avoid any position bias and remain as objective as possible.
+    •	Consider what the property means and how it applies to the outputs. Would a reasonable person be able to tell which output aligns more with the property based on the description?
 
 Instructions:
-- If Response A is higher on the given property than Response B, respond with “A”.
-- If Response B is higher on the given property than Response A, respond with “B”.
-- If the responses are roughly equal on the property, respond with “equal”.
-- If the property does not apply to these outputs (e.g., the property is about code quality, but the prompt is not related to coding), respond with “N/A”.
-- If you think a reasonable person would be unsure about the meaning of the property (it is not well defined or the low and high descriptions are not mutually exclusive), respond with “unsure”. 
+	•	If Response A aligns with the property more than Response B, respond with “A”.
+    •	If Response B aligns with the property more than Response A, respond with “B”.
+	•	If the responses are roughly equal on the property, respond with “equal”.
+	•	If the property does not apply to these outputs (e.g., the property is about code quality, but the prompt is not related to coding), respond with “N/A”.
+	•	If you are unsure about the meaning of the property, respond with “unsure”. Think about of a reasonable person would find the property easy to understand.
 
-A group of humans should agree with your decision. 
-Use the following format for your response:
+A group of humans should agree with your decision. Use the following format for your response:
+Explanation: {{your explanation}}
 Model: {{A, B, equal, N/A, or unsure}}
-"""
+
+Remember to be as objective as possible and strictly adhere to the response format."""
+
 
     ranker_prompt1 = judge_systems_prompt + """
 Here is the property and the two responses:
@@ -75,37 +77,107 @@ Remember to be as objective as possible and strictly adhere to the response form
     # drop any duplicate columns
     vibe_df = vibe_df.loc[:, ~vibe_df.columns.duplicated()]
     vibe_df["ranker_inputs"] = vibe_df.apply(
-        lambda row: f"Property: {row['vibe']}\nUser prompt:\n{row['question']}\n\nResponse A:\n{row[models[0]]}\n\nResponse B:\n{row[models[1]]}",
+        lambda row: f"\nProperty: {row['vibe']}\n\nUser prompt:\n{row['question']}\n\nResponse A:\n{row[models[0]]}\n\nResponse B:\n{row[models[1]]}\n\nProperty (restated): {row['vibe']}",
         axis=1
     )
     if position_matters:
         vibe_df["ranker_inputs_reversed"] = vibe_df.apply(
-            lambda row: f"Property: {row['vibe']}\nUser prompt:\n{row['question']}\n\nResponse A:\n{row[models[1]]}\n\nResponse B:\n{row[models[0]]}",
+            lambda row: f"Property: {row['vibe']}\nUser prompt:\n{row['question']}\n\nResponse A:\n{row[models[1]]}\n\nResponse B:\n{row[models[0]]}\n\nProperty (restated): {row['vibe']}",
             axis=1
         )
 
     ranker_1 = vibe_df.sem_map(ranker_prompt1, return_raw_outputs=True, suffix="ranker_output_1")
-    print(f"Len of ranker_1: {len(ranker_1)}, num of unique vibes: {len(ranker_1['vibe'].unique())}")
     vibe_df = vibe_df.merge(ranker_1[["vibe", "question", models[0], models[1], "preference", "ranker_output_1", "raw_outputranker_output_1"]], on=["vibe", "question", models[0], models[1], "preference"], how="left")
     vibe_df["ranker_output_1"] = vibe_df["ranker_output_1"].apply(ranker_postprocess)
     if position_matters:
         ranker_2 = vibe_df.sem_map(ranker_prompt2, return_raw_outputs=True, suffix="ranker_output_2")
         vibe_df = vibe_df.merge(ranker_2[["question", models[0], models[1], "preference", "ranker_output_2"]], on=["question", models[0], models[1], "preference"], how="left")
         vibe_df["ranker_output_2"] = vibe_df["ranker_output_2"].apply(ranker_postprocess)
-        # Detect if position matters
         vibe_df["position_matters"] = vibe_df["ranker_output_1"] != -1 * vibe_df["ranker_output_2"]
         vibe_df["score"] = vibe_df.apply(
             lambda row: row["ranker_output_1"] if not row["position_matters"] else 0, 
             axis=1
         )
+        wandb.summary["position_matters"] = vibe_df["position_matters"].mean()
     else:
         vibe_df["score"] = vibe_df["ranker_output_1"]
 
     return vibe_df
 
-def main(data_path, models, num_proposal_samples=30, num_final_vibes=10, test=False, position_matters=False, project_name="vibecheck"):
+def create_reduce_prompt(num_reduced_axes: int):
+    return f"""Below is a list of properties that are found in LLM outputs. I would like to summarize this list to AT MOST {num_reduced_axes} representative properties with concise descriptions. Are there any overarching properties that are present in a large number of the properties?
+
+Here is the list of properties:
+{{differences}}
+
+Your final list of simplified properties should be human interpretable. The final list of descriptions should be unambiguous and concise. For example, 
+* "uses a lot of emojis and markdown" is not a good property because a piece of text can have emojies but not markdown, and vice versa. This should be split into two properties: "uses a lot of emojis" and "uses markdown".
+* if two properties are "uses markdown" and "utilizes extensive formatting", text which contains one likely contains the other and should be combined into a single property "uses extensive markdown formatting".
+* "focus on historical context" is not a good property because it is too vague. A better property would be "mentions specific historical events".
+
+Each property should be <= 10 words. Your response should be a list deliniated with "-"
+"""
+
+def propose_vibes(df, models, num_proposal_samples=30, num_final_vibes=10, batch_size=5):
+    proposer_prompt_freeform = """
+You are a machine learning researcher trying to figure out the major differences between the behaviors of two llms by finding differences in their responses to the same set of questions and seeing if these differences correspond with user preferences. Write down as many differences as you can find between the two outputs. Please format your differences as a list of properties that appear more in one output than the other.
+
+Below are multiple sets of questions and responses, separated by dashed lines. For each set, analyze the differences between Model 1 and Model 2. What properties are seen in the responses from Model 1 that are not seen in the responses from Model 2? What properties are seen in the responses from Model 2 that are not seen in the responses from Model 1?
+
+{combined_responses}
+
+The format should be a list of properties that appear more in one output than the other in the format of a short description of the property. An example of a possible output is,
+- "conversational language"
+- "friendly tone"
+- "code that optimizes for runtime"
+- "uses a lot of emojis"
+- "stories presented in the third person"
+
+Note that this example is not at all exhaustive, but rather just an example of the format. Consider differences on many different axes such as tone, language, structure, content, safety, and any other axis that you can think of. 
+    
+Remember that these properties should be human interpretable and that the differences should be concise (<= 10 words), substantive and objective. Write down as many properties as you can find. Do not explain which model has which property, simply describe the property.
+If there are no substantive differences between the outputs, please respond with only "No differences found."
+"""
+    # Create combined responses
+    df["single_combined_response"] = df.apply(
+        lambda row: (
+            f"User prompt:\n{row['question']}\n\n"
+            f"Model 1:\n{row[models[0]]}\n\n"
+            f"Model 2:\n{row[models[1]]}"
+        ),
+        axis=1
+    )
+    
+    # Sample and batch the data
+    proposer_df = df.sample(num_proposal_samples, random_state=42).reset_index(drop=True)
+    proposer_df["batch_id"] = proposer_df.index // batch_size
+    
+    # Group responses into batches
+    proposer_df["combined_responses"] = proposer_df.groupby("batch_id")["single_combined_response"].transform(
+        lambda x: "\n-------------\n".join(x)
+    )
+    proposer_df = proposer_df.drop_duplicates("batch_id")
+    proposer_df = proposer_df.sem_map(proposer_prompt_freeform, return_raw_outputs=True, suffix="differences")
+    
+    proposer_df["differences"] = proposer_df["differences"].apply(proposer_postprocess)
+    wandb.log({"proposer_results": wandb.Table(dataframe=proposer_df)})
+    
+    # Continue with existing processing
+    results = proposer_df[proposer_df["differences"].apply(lambda x: len(x) > 0)]
+    results = results.explode("differences").reset_index(drop=True)
+
+    # Cluster and reduce axes
+    results = results.sem_index("differences", "differences_index").sem_cluster_by("differences", 1)
+    summaries = results.sem_agg(create_reduce_prompt(num_final_vibes), group_by="cluster_id", suffix="reduced axes")
+    # summaries = results.sem_agg(create_reduce_prompt(num_final_vibes), suffix="reduced axes")
+    summaries["reduced axes parsed"] = summaries["reduced axes"].apply(parse_axes)
+    vibes = summaries.explode("reduced axes parsed")["reduced axes parsed"].to_list()
+    print("Vibes:\n" + "\n".join(vibes))
+    return vibes
+
+def main(data_path, models, num_proposal_samples=30, num_final_vibes=10, test=False, position_matters=False, project_name="vibecheck", proposer_only=False):
     # Initialize wandb
-    wandb.init(project=project_name, name=f"{models[0]}_vs_{models[1]}", save_code=True)
+    wandb.init(project=project_name, name=f"[new]{models[0]}_vs_{models[1]}", save_code=True)
 
     # Initialize LOTUS
     # TODO: create PR in LOTUS repo to fix cahcing problems
@@ -142,54 +214,63 @@ def main(data_path, models, num_proposal_samples=30, num_final_vibes=10, test=Fa
     )
     wandb.log({"preference_distribution": wandb.Html(fig.to_html())})
 
-    # Create combined responses
-    df["combined_responses"] = df.apply(
-        lambda row: (
-            f"User prompt:\n{row['question']}\n\n"
-            f"Model 1:\n{row[models[0]]}\n\n"
-            f"Model 2:\n{row[models[1]]}"
-        ),
-        axis=1
-    )
+#     # Create combined responses
+#     df["combined_responses"] = df.apply(
+#         lambda row: (
+#             f"User prompt:\n{row['question']}\n\n"
+#             f"Model 1:\n{row[models[0]]}\n\n"
+#             f"Model 2:\n{row[models[1]]}"
+#         ),
+#         axis=1
+#     )
 
-    # Propose vibes
-    proposer_prompt_freeform = """
-You are a machine learning researcher trying to figure out the major differences between the behaviors of two llms by finding differences in their responses to the same set of questions and seeing if these differences correspond with user preferences. Write down as many differences as you can find between the two outputs. Please format your differences as a list of axes of variation and differences between the two outputs. Try to give axes which represent a property that a human could easily interpret and they could categorize a pair of text outputs as higher or lower on that specific axis.
-a pair of text outputs as higher or lower on that specific axis.
+#     # Propose vibes
+#     proposer_prompt_freeform = """
+# You are a machine learning researcher trying to figure out the major differences between the behaviors of two llms by finding differences in their responses to the same set of questions and seeing if these differences correspond with user preferences. Write down as many differences as you can find between the two outputs. Please format your differences as a list of properties that appear more in one output than the other.
 
-Here is the question and the two responses:
-{combined_responses}
+# Here is the question and the two responses:
+# {combined_responses}
 
-The format should be:
-- {{axis_1}}: {{difference}}
-- {{axis_2}}: {{difference}}
+# The format should be a list of properties that appear more in one output than the other in the format of a short description of the property. An example of a possible output is,
+# - "conversational language"
+# - "friendly tone"
+# - "code that optimizes for runtime"
+# - "uses a lot of emojis"
+# - "stories presented in the third person"
+
+# Note that this example is not at all exhaustive, but rather just an example of the format. Consider differences on many different axes such as tone, language, structure, content, safety, and any other axis that you can think of. List properties that are more present in model 1 than model 2 as well as properties that are more present in model 2 than model 1.
     
-Remember that these axes should be human interpretable and that the differences should be substantive and objective. 
-If there are no substantive differences between the outputs, please respond with only "No differences found."
-"""
+# Remember that these properties should be human interpretable and that the differences should be concise (<= 10 words), substantive and objective. Write down as many properties as you can find. Do not explain which model has which property, simply describe the property.
+# If there are no substantive differences between the outputs, please respond with only "No differences found."
+# """
 
-    # Run on a subsample for the "train" split
-    proposer_df = df.sample(num_proposal_samples, random_state=42)
-    proposer_df = proposer_df.sem_map(proposer_prompt_freeform, return_raw_outputs=True, suffix="differences")
-    proposer_df["differences"] = proposer_df["differences"].apply(proposer_postprocess)
-    results = proposer_df[proposer_df["differences"].apply(lambda x: len(x) > 0)]
-    results = results.explode("differences").reset_index(drop=True)
+#     # Run on a subsample for the "train" split
+#     proposer_df = df.sample(num_proposal_samples, random_state=42)
+#     proposer_df = proposer_df.sem_map(proposer_prompt_freeform, return_raw_outputs=True, suffix="differences")
+#     proposer_df["differences"] = proposer_df["differences"].apply(proposer_postprocess)
+#     wandb.log({"proposer_results": wandb.Table(dataframe=proposer_df)})
+#     results = proposer_df[proposer_df["differences"].apply(lambda x: len(x) > 0)]
+#     results = results.explode("differences").reset_index(drop=True)
 
-    # Cluster and reduce axes
-    results = results.sem_index("differences", "differences_index").sem_cluster_by("differences", 1)
-    summaries = results.sem_agg(create_reduce_prompt(num_final_vibes), group_by="cluster_id", suffix="reduced axes")
-    # summaries = results.sem_agg(create_reduce_prompt(num_final_vibes), suffix="reduced axes")
-    summaries["reduced axes parsed"] = summaries["reduced axes"].apply(parse_axes)
-    vibes = summaries.explode("reduced axes parsed")["reduced axes parsed"].to_list()
-    print("Vibes:\n" + "\n".join(vibes))
+#     # Cluster and reduce axes
+#     results = results.sem_index("differences", "differences_index").sem_cluster_by("differences", 1)
+#     summaries = results.sem_agg(create_reduce_prompt(num_final_vibes), group_by="cluster_id", suffix="reduced axes")
+#     # summaries = results.sem_agg(create_reduce_prompt(num_final_vibes), suffix="reduced axes")
+#     summaries["reduced axes parsed"] = summaries["reduced axes"].apply(parse_axes)
+#     vibes = summaries.explode("reduced axes parsed")["reduced axes parsed"].to_list()
+#     print("Vibes:\n" + "\n".join(vibes))
+
+    vibes = propose_vibes(df, models, num_proposal_samples=num_proposal_samples, num_final_vibes=num_final_vibes)
 
     # Log vibes to wandb
     vibes_df = pd.DataFrame({"vibes": vibes})
     wandb.log({"vibes": wandb.Table(dataframe=vibes_df)})
     vibes_df.to_csv("vibes.csv", index=False)
 
+    if proposer_only:
+        return
+
     # Rank axes
-    # Change to gpt-4o-mini
     lm = LM(model="gpt-4o-mini", cache=cache)
     lotus.settings.configure(lm=lm, enable_cache=False)
     if test:
@@ -214,60 +295,41 @@ If there are no substantive differences between the outputs, please respond with
         "score": "mean"
     }).reset_index()
 
-    # Split vibe column into name and descriptions
-    desc_df = agg_df['vibe'].apply(parse_vibe_description)
-    agg_df = pd.concat([agg_df, desc_df], axis=1)
-
-        # Create subplots for side-by-side visualization
     fig = make_subplots(
         rows=1, 
         cols=2,
-        subplot_titles=('Preference Prediction', 'Model Identity'),
+        subplot_titles=('Model Identity', 'Preference Prediction'),
         horizontal_spacing=0.1,
         specs=[[{'type': 'bar'}, {'type': 'bar'}]]
     )
 
-    # Bar for preference coefficients (left plot)
+    # Bar for model identity coefficients (now left plot)
     fig.add_trace(
         go.Bar(
-            y=agg_df['name'],
-            x=agg_df['pref_score'],
-            name='Preference Prediction',
-            orientation='h',
-            marker_color='#3498db',
-            hovertemplate=(
-                '%{x:.4f}<br>' +
-                agg_df.apply(
-                    lambda row: row['high_desc'] if row['pref_score'] >= 0 else row['low_desc'], axis=1
-                ) +
-                '<extra></extra>'
-            )
-        ),
-        row=1, col=1
-    )
-
-    # Bar for model identity coefficients (right plot)
-    fig.add_trace(
-        go.Bar(
-            y=agg_df['name'],
+            y=agg_df['vibe'],
             x=agg_df['score'],
             name='Model Identity',
             orientation='h',
             marker_color='#2ecc71',
-            hovertemplate=(
-                '%{x:.4f}<br>' +
-                agg_df.apply(
-                    lambda row: row['high_desc'] if row['score'] >= 0 else row['low_desc'], axis=1
-                ) +
-                '<extra></extra>'
-            )
+        ),
+        row=1, col=1
+    )
+
+    # Bar for preference coefficients (now right plot)
+    fig.add_trace(
+        go.Bar(
+            y=agg_df['vibe'],
+            x=agg_df['pref_score'],
+            name='Preference Prediction',
+            orientation='h',
+            marker_color='#3498db',
         ),
         row=1, col=2
     )
 
     fig.update_layout(
         title={
-            'text': 'Feature Importance Heuristics<br><sup>Mouse over bars to see descriptions of high/low values</sup>',
+            'text': 'Vibe Heuristics',
             'xanchor': 'center',
             'y': 0.95,
             'x': 0.5,
@@ -277,16 +339,16 @@ If there are no substantive differences between the outputs, please respond with
         showlegend=True,
     )
 
-    # Update x-axes
+    # Update x-axes (swapped)
     fig.update_xaxes(
-        title_text=f'Seperability Score (Identity {models[0]} vs {models[1]})',
+        title_text=f'Seperability Score<br>{models[0]}(+) vs {models[1]}(-)',
         zeroline=True,
         zerolinewidth=2,
         zerolinecolor='black',
         row=1, col=1
     )
     fig.update_xaxes(
-        title_text=f'Seperability Score (Preference {models[0]} vs {models[1]})',
+        title_text=f'Seperability Score<br>Preferred(+) vs Unpreferred(-)',
         zeroline=True,
         zerolinewidth=2,
         zerolinecolor='black',
@@ -315,16 +377,18 @@ If there are no substantive differences between the outputs, please respond with
     # feature_df_test, X_pref_test, y_pref_test, y_identity_test = get_feature_df(vibe_df, split="test")
 
     # Train logistic regressions
-    preference_model, preference_coef_df, preference_accuracy_test = train_and_evaluate_model(
+    preference_model, preference_coef_df, preference_accuracy_test, preference_acc_std = train_and_evaluate_model(
         X_pref, y_pref, feature_df.columns, "Preference Prediction"
     )
-    identity_model, identity_coef_df, identity_accuracy_test = train_and_evaluate_model(
+    identity_model, identity_coef_df, identity_accuracy_test, identity_acc_std = train_and_evaluate_model(
         X_pref, y_identity, feature_df.columns, "Model Identity Classification"
     )
 
     wandb.log({
         "preference_model_test_accuracy": preference_accuracy_test,
-        "identity_model_test_accuracy": identity_accuracy_test
+        "identity_model_test_accuracy": identity_accuracy_test,
+        "preference_model_test_accuracy_std": preference_acc_std,
+        "identity_model_test_accuracy_std": identity_acc_std
     })
 
     # Merge coefficient data
@@ -332,60 +396,54 @@ If there are no substantive differences between the outputs, please respond with
         preference_coef_df, on="vibe", suffixes=("_modelID", "_preference")
     ).sort_values("coef_preference", ascending=False)
 
-    # Parse vibe descriptions for visualization
-    desc_df = coef_df['vibe'].apply(parse_vibe_description)
-    coef_df = pd.concat([coef_df, desc_df], axis=1)
-
     # Create subplots for side-by-side visualization
     fig = make_subplots(
         rows=1, 
         cols=2,
-        subplot_titles=('Preference Prediction', 'Model Identity'),
+        subplot_titles=('Model Identity', 'Preference Prediction'),
         horizontal_spacing=0.1,
         specs=[[{'type': 'bar'}, {'type': 'bar'}]]
     )
 
-    # Bar for preference coefficients (left plot)
+    # Bar for model identity coefficients (now left plot)
     fig.add_trace(
         go.Bar(
-            y=coef_df['name'],
-            x=coef_df['coef_preference'],
-            name='Preference Prediction',
-            orientation='h',
-            marker_color='#3498db',
-            hovertemplate=(
-                '%{x:.4f}<br>' +
-                coef_df.apply(
-                    lambda row: row['high_desc'] if row['coef_preference'] >= 0 else row['low_desc'], axis=1
-                ) +
-                '<extra></extra>'
-            )
-        ),
-        row=1, col=1
-    )
-
-    # Bar for model identity coefficients (right plot)
-    fig.add_trace(
-        go.Bar(
-            y=coef_df['name'],
+            y=coef_df['vibe'],
             x=coef_df['coef_modelID'],
             name='Model Identity',
             orientation='h',
             marker_color='#2ecc71',
-            hovertemplate=(
-                '%{x:.4f}<br>' +
-                coef_df.apply(
-                    lambda row: row['high_desc'] if row['coef_modelID'] >= 0 else row['low_desc'], axis=1
-                ) +
-                '<extra></extra>'
-            )
+            error_x=dict(
+                type='data',
+                array=coef_df['coef_std_modelID'],
+                visible=True,
+                color='#2c3e50'
+            ),
+        ),
+        row=1, col=1
+    )
+
+    # Bar for preference coefficients (now right plot)
+    fig.add_trace(
+        go.Bar(
+            y=coef_df['vibe'],
+            x=coef_df['coef_preference'],
+            name='Preference Prediction',
+            orientation='h',
+            marker_color='#3498db',
+            error_x=dict(
+                type='data',
+                array=coef_df['coef_std_preference'],
+                visible=True,
+                color='#2c3e50'
+            ),
         ),
         row=1, col=2
     )
 
     fig.update_layout(
         title={
-            'text': 'Feature Importance Coefficients<br><sup>Mouse over bars to see descriptions of high/low values</sup>',
+            'text': 'Vibe Model Coefficients',
             'xanchor': 'center',
             'y': 0.95,
             'x': 0.5,
@@ -395,16 +453,16 @@ If there are no substantive differences between the outputs, please respond with
         showlegend=True,
     )
 
-    # Update x-axes
+    # Update x-axes (swapped)
     fig.update_xaxes(
-        title_text='Coefficient Value',
+        title_text=f'Seperability Score<br>{models[0]}(+) vs {models[1]}(-)',
         zeroline=True,
         zerolinewidth=2,
         zerolinecolor='black',
         row=1, col=1
     )
     fig.update_xaxes(
-        title_text='Coefficient Value',
+        title_text=f'Seperability Score<br>Preferred(+) vs Unpreferred(-)',
         zeroline=True,
         zerolinewidth=2,
         zerolinecolor='black',
@@ -441,7 +499,7 @@ if __name__ == "__main__":
                         help='Path to the CSV file containing model outputs')
     parser.add_argument('--models', nargs="+", default=["command_xlarge_beta", "TNLGv2"],
                         help='Models to compare')
-    parser.add_argument('--num_proposal_samples', type=int, default=30,
+    parser.add_argument('--num_proposal_samples', type=int, default=5,
                         help='Number of samples to use for proposing vibes')
     parser.add_argument('--project', type=str, default="vibecheck",
                         help='Wandb project name')
@@ -453,6 +511,8 @@ if __name__ == "__main__":
                         help='Number of final vibes to use for analysis')
     parser.add_argument('--solver', type=str, default='elasticnet',
                         help='Solver to use for logistic regression (standard, lasso, elasticnet)')
+    parser.add_argument('--proposer_only', action='store_true', 
+                        help='Only run the proposer')
 
     args = parser.parse_args()
-    main(args.data_path, args.models, args.num_proposal_samples, args.num_final_vibes, args.test, args.position_matters)
+    main(args.data_path, args.models, args.num_proposal_samples, args.num_final_vibes, args.test, args.position_matters, args.project, args.proposer_only)

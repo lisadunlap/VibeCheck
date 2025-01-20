@@ -46,7 +46,7 @@ Some examples of GOOD axes include:
 - "Tone: High: Sarcastic tone. Low: Serious tone."
 - "Efficiency (coding): High: Optimized for runtime and memory. Low: Brute force algorithms with high memory usage."
 
-Make sure the high and low descriptions are as concise as possible. Please return the simplified list of <={num_reduced_axes} axes with any similar, unclear, or uncommon axes removed.
+Make sure the high and low descriptions are as concise as possible. Please return the simplified list of <={num_reduced_axes} axes with any similar, unclear, or uncommon axes removed. Remember that there may be <{num_reduced_axes} axes which are unique, so double check that you have not returned any simplified axes which are very similar to each other.
 
 Please maintain the format of the original axes and return a numbered list. Each element should be structured as follows:
 "{{{{axis_name}}}}: High: {{{{high description}}}} Low: {{{{low description}}}}" 
@@ -111,7 +111,9 @@ def parse_vibe_description(vibe_text: str) -> pd.Series:
     low_desc = high_low_parts[1].strip()
     return pd.Series({'name': name, 'high_desc': high_desc, 'low_desc': low_desc})
 
-def train_and_evaluate_model(X: np.ndarray, y: np.ndarray, feature_names: List[str], split_train_test:bool=True, solver: str='elasticnet'):
+def train_and_evaluate_model(X: np.ndarray, y: np.ndarray, feature_names: List[str], 
+                           split_train_test:bool=True, solver: str='elasticnet', 
+                           n_splits: int=5):
     """
     Train a logistic regression model on (X, y) and compute accuracy and p-values for each feature.
     
@@ -121,6 +123,8 @@ def train_and_evaluate_model(X: np.ndarray, y: np.ndarray, feature_names: List[s
         feature_names: Names of features
         split_train_test: Whether to split data into train/test sets
         solver: Type of regularization to use ('standard', 'lasso', or 'elasticnet')
+        bootstrap_iters: Number of bootstrap iterations (0 for no bootstrapping)
+        n_splits: Number of random train/test splits to average over
     """
     # Configure model based on solver type
     if solver == 'standard':
@@ -132,19 +136,38 @@ def train_and_evaluate_model(X: np.ndarray, y: np.ndarray, feature_names: List[s
     else:
         raise ValueError("solver must be one of: 'standard', 'lasso', 'elasticnet'")
 
-    # Split and train
-    if split_train_test:
-        X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.5, random_state=42)
+    # Initialize arrays to store results across splits
+    split_accuracies = []
+    split_coefs = []
+    
+    for split in range(n_splits):
+        # Split and train
+        if split_train_test:
+            X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.5, random_state=42+split)
+        else:
+            X_train = X
+            X_test = X
+            y_train = y
+            y_test = y
+            
+        model.fit(X_train, y_train)
+        
+        # Store results for this split
+        split_accuracies.append(accuracy_score(y_test, model.predict(X_test)))
+        split_coefs.append(model.coef_[0])
+        
+    # Average results across splits
+    accuracy = np.mean(split_accuracies)
+    model.coef_ = np.mean(split_coefs, axis=0).reshape(1, -1)
+    
+    if n_splits > 1:
+        acc_std = np.std(split_accuracies)
+        coef_std = np.std(split_coefs, axis=0)
+        print(f"Accuracy ({solver}): {accuracy:.3f} ± {acc_std:.3f}")
+        print(f"Coefficients ({solver}): {model.coef_[0]} ± {coef_std}")
     else:
-        X_train = X
-        X_test = X
-        y_train = y
-        y_test = y
-    model.fit(X_train, y_train)
-
-    # Calculate accuracy
-    accuracy = accuracy_score(y_test, model.predict(X_test))
-    print(f"Accuracy ({solver}): {accuracy}")
+        acc_std = 0
+        print(f"Accuracy ({solver}): {accuracy:.3f}")
 
     # Calculate p-values
     X_with_intercept = np.column_stack([np.ones(len(X_train)), X_train])
@@ -159,10 +182,16 @@ def train_and_evaluate_model(X: np.ndarray, y: np.ndarray, feature_names: List[s
     coef_df = pd.DataFrame({
         "vibe": feature_names,
         "coef": model.coef_[0],
-        "p_value": p_values
+        "p_value": p_values,
     })
 
-    return model, coef_df, accuracy
+    # If using multiple splits, add split-based confidence intervals
+    if n_splits > 1:
+        coef_df["coef_std"] = np.std(split_coefs, axis=0)
+        coef_df["coef_lower_split"] = model.coef_[0] - 1.96 * coef_df["coef_std"]
+        coef_df["coef_upper_split"] = model.coef_[0] + 1.96 * coef_df["coef_std"]
+
+    return model, coef_df, accuracy, acc_std
 
 def get_feature_df(vibe_df, split="train"):
     """
