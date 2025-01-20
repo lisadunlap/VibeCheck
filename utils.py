@@ -74,19 +74,12 @@ def get_pref_score(preference: str, models: list):
         return -1
     else:
         return 0
-
-def rank_axes(vibes, df, models, lm, rm):
+    
+def ranker_postprocess(output: str) -> int:
     """
-    Ranks the two model outputs across the given vibes (axes) using LOTUS ranking prompts.
+    Postprocess the ranker's output to extract whether model A is favored (1), B is favored (-1), or tie/NA (0).
     """
-    import re
-    import lotus
-    from lotus.cache import CacheConfig, CacheType, CacheFactory
-
-    def ranker_postprocess(output: str) -> int:
-        """
-        Postprocess the ranker's output to extract whether model A is favored (1), B is favored (-1), or tie/NA (0).
-        """
+    try:
         output = output.replace("Output ", "").replace("output ", "")
         output = re.sub(r"[#*]", "", output)
         score_pattern = re.compile(r"Model: (A|B|N/A|unsure|equal)", re.I | re.M)
@@ -99,79 +92,9 @@ def rank_axes(vibes, df, models, lm, rm):
             return -1
         else:
             return 0
-
-    judge_systems_prompt = """You are a fair and unbiased judge. Your task is to compare the outputs of two language models (A and B) on a given property. Which response better aligns more with the given property, A, B, or equal?
-When comparing the outputs, consider the following:
-
-- Your sole focus is to determine which response better aligns with the given property, NOT how good or bad the response is.
-- Avoid any position bias and remain as objective as possible.
-- Consider what the property means and how it applies to the outputs. Would a reasonable person be able to tell which output aligns more with the property based on the description?
-
-Instructions:
-- If Response A aligns with the property more than Response B, respond with “A”.
-- If Response B aligns with the property more than Response A, respond with “B”.
-- If the responses are roughly equal on the property, respond with “equal”.
-- If the property does not apply to these outputs (e.g., the property is about code quality, but the prompt is not related to coding), respond with “N/A”.
-- If you are unsure about the meaning of the property, respond with “unsure”. 
-Think about whether a reasonable person would find the property easy to understand.
-
-A group of humans should agree with your decision. 
-Use the following format for your response:
-Model: {{A, B, equal, N/A, or unsure}}
-"""
-
-    ranker_prompt1 = judge_systems_prompt + """
-Here is the property and the two responses:
-{ranker_inputs_1}
-
-Remember to be as objective as possible and strictly adhere to the response format.
-"""
-
-    ranker_prompt2 = judge_systems_prompt + """
-Here is the property and the two responses:
-{ranker_inputs_2}
-
-Remember to be as objective as possible and strictly adhere to the response format.
-"""
-
-    vibe_dfs = []
-    for vibe in vibes:
-        vibe_df = df.copy()
-        vibe_df["vibe"] = vibe
-        vibe_dfs.append(vibe_df)
-
-    vibe_df = pd.concat(vibe_dfs)
-
-    # drop any duplicate columns
-    vibe_df = vibe_df.loc[:, ~vibe_df.columns.duplicated()]
-    vibe_df["ranker_inputs_1"] = vibe_df.apply(
-        lambda row: f"Property: {row['vibe']}\nUser prompt:\n{row['question']}\n\nResponse A:\n{row[models[0]]}\n\nResponse B:\n{row[models[1]]}",
-        axis=1
-    )
-    vibe_df["ranker_inputs_2"] = vibe_df.apply(
-        lambda row: f"Property: {row['vibe']}\nUser prompt:\n{row['question']}\n\nResponse A:\n{row[models[1]]}\n\nResponse B:\n{row[models[0]]}",
-        axis=1
-    )
-
-    # Use lotus sem_map
-    ranker_1 = vibe_df.sem_map(ranker_prompt1, return_raw_outputs=True, suffix="ranker_output_1")
-    ranker_2 = vibe_df.sem_map(ranker_prompt2, return_raw_outputs=True, suffix="ranker_output_2")
-
-    vibe_df = pd.concat([vibe_df, ranker_1, ranker_2], axis=1)
-    vibe_df = vibe_df.loc[:, ~vibe_df.columns.duplicated()]
-
-    # Postprocess
-    vibe_df["ranker_output_1"] = vibe_df["ranker_output_1"].apply(ranker_postprocess)
-    vibe_df["ranker_output_2"] = vibe_df["ranker_output_2"].apply(ranker_postprocess)
-
-    # Detect if position matters
-    vibe_df["position_matters"] = vibe_df["ranker_output_1"] != -1 * vibe_df["ranker_output_2"]
-    vibe_df["score"] = vibe_df.apply(
-        lambda row: row["ranker_output_1"] if not row["position_matters"] else 0, 
-        axis=1
-    )
-
-    return vibe_df
+    except Exception as e:
+        print(f"Error in ranker_postprocess: {output}")
+        return 0
 
 def parse_vibe_description(vibe_text: str) -> pd.Series:
     """
@@ -270,9 +193,9 @@ def get_feature_df(vibe_df, split="train"):
     """
     # Pivot to create wide-format scores for each vibe
     feature_df = pd.pivot_table(
-        vibe_df[vibe_df["split"] == split],
+        vibe_df,
         values='score',
-        index=vibe_df[vibe_df["split"] == split].index,
+        index=vibe_df.index,
         columns='vibe',
         fill_value=0
     )
