@@ -383,7 +383,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--models",
         nargs="+",
-        default=["command_xlarge_beta", "TNLGv2"],
+        required=True,
         help="Models to compare",
     )
     parser.add_argument(
