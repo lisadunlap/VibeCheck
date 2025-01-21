@@ -7,7 +7,6 @@ import lotus
 from lotus.models import LM, SentenceTransformersRM
 from lotus.cache import CacheConfig, CacheType, CacheFactory
 
-# Local utility functions
 from utils import (
     proposer_postprocess,
     parse_axes,
@@ -83,6 +82,7 @@ Remember to be as objective as possible and strictly adhere to the response form
     ranker_1 = vibe_df.sem_map(
         ranker_prompt1, return_raw_outputs=True, suffix="ranker_output_1"
     )
+
     vibe_df = vibe_df.merge(
         ranker_1[
             [
@@ -194,9 +194,13 @@ If there are no substantive differences between the outputs, please respond with
     results = results.sem_index("differences", "differences_index").sem_cluster_by(
         "differences", 1
     )
+    # summaries = results.sem_agg(
+    #     create_reduce_prompt(num_final_vibes),
+    #     group_by="cluster_id",
+    #     suffix="reduced axes",
+    # )
     summaries = results.sem_agg(
         create_reduce_prompt(num_final_vibes),
-        group_by="cluster_id",
         suffix="reduced axes",
     )
     summaries["reduced axes parsed"] = summaries["reduced axes"].apply(parse_axes)
@@ -226,7 +230,7 @@ def main(
     cache = CacheFactory.create_cache(cache_config)
     lm = LM(model="gpt-4o", cache=cache)
     rm = SentenceTransformersRM(model="intfloat/e5-base-v2")
-    lotus.settings.configure(lm=lm, rm=rm, enable_cache=False)
+    lotus.settings.configure(lm=lm, rm=rm, enable_cache=True)
 
     # Load and preprocess data
     df = pd.read_csv(data_path)
@@ -268,7 +272,7 @@ def main(
 
     # Rank axes
     lm = LM(model="gpt-4o-mini", cache=cache)
-    lotus.settings.configure(lm=lm, enable_cache=False)
+    lotus.settings.configure(lm=lm, enable_cache=True)
     if test:
         vibe_df = rank_axes(vibes[:3], df, models, position_matters=position_matters)
     else:
