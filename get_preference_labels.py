@@ -1,4 +1,4 @@
-from components.proposer import parse_bullets
+from utils import parse_bullets
 import lotus
 from lotus.models import LM, SentenceTransformersRM
 from lotus.cache import CacheConfig, CacheType, CacheFactory
