@@ -27,6 +27,7 @@ from utils import (
     ranker_postprocess,
 )
 
+
 def rank_axes(vibes, df, models, position_matters=False):
     """
     Ranks the two model outputs across the given vibes (axes) using LOTUS ranking prompts.
@@ -44,7 +45,9 @@ Instructions:
   "unsure" if the property is poorly defined
 """
 
-    ranker_prompt1 = judge_systems_prompt + """
+    ranker_prompt1 = (
+        judge_systems_prompt
+        + """
 Here is the property and the two responses:
 {ranker_inputs}
 
@@ -52,8 +55,11 @@ Remember to output the response that better aligns with the "HIGH:" definition o
 Explanation: {{your explanation}}
 Model: {{A, B, equal, N/A, or unsure}}
 """
+    )
 
-    ranker_prompt2 = judge_systems_prompt + """
+    ranker_prompt2 = (
+        judge_systems_prompt
+        + """
 Here is the property and the two responses:
 {ranker_inputs_reversed}
 
@@ -61,6 +67,7 @@ Remember to output the response that better aligns with the "HIGH:" definition o
 Explanation: {{your explanation}}
 Model: {{A, B, equal, N/A, or unsure}}
 """
+    )
 
     vibe_dfs = []
     for vibe in vibes:
@@ -69,31 +76,61 @@ Model: {{A, B, equal, N/A, or unsure}}
         vibe_dfs.append(vibe_df)
 
     vibe_df = pd.concat(vibe_dfs).reset_index(drop=True)
- 
+
     # drop any duplicate columns
     vibe_df = vibe_df.loc[:, ~vibe_df.columns.duplicated()]
     vibe_df["ranker_inputs"] = vibe_df.apply(
         lambda row: f"\nProperty: {row['vibe']}\n\nUser prompt:\n{row['question']}\n\nResponse A:\n{row[models[0]]}\n\nResponse B:\n{row[models[1]]}\n\nProperty (restated): {row['vibe']}",
-        axis=1
+        axis=1,
     )
     if position_matters:
         vibe_df["ranker_inputs_reversed"] = vibe_df.apply(
             lambda row: f"Property: {row['vibe']}\nUser prompt:\n{row['question']}\n\nResponse A:\n{row[models[1]]}\n\nResponse B:\n{row[models[0]]}\n\nProperty (restated): {row['vibe']}",
-            axis=1
+            axis=1,
         )
 
-    ranker_1 = vibe_df.sem_map(ranker_prompt1, return_raw_outputs=True, suffix="ranker_output_1")
-    print(f"Len of ranker_1: {len(ranker_1)}, num of unique vibes: {len(ranker_1['vibe'].unique())}")
-    vibe_df = vibe_df.merge(ranker_1[["vibe", "question", models[0], models[1], "preference", "ranker_output_1", "raw_outputranker_output_1"]], on=["vibe", "question", models[0], models[1], "preference"], how="left")
+    ranker_1 = vibe_df.sem_map(
+        ranker_prompt1, return_raw_outputs=True, suffix="ranker_output_1"
+    )
+    print(
+        f"Len of ranker_1: {len(ranker_1)}, num of unique vibes: {len(ranker_1['vibe'].unique())}"
+    )
+    vibe_df = vibe_df.merge(
+        ranker_1[
+            [
+                "vibe",
+                "question",
+                models[0],
+                models[1],
+                "preference",
+                "ranker_output_1",
+                "raw_outputranker_output_1",
+            ]
+        ],
+        on=["vibe", "question", models[0], models[1], "preference"],
+        how="left",
+    )
     vibe_df["ranker_output_1"] = vibe_df["ranker_output_1"].apply(ranker_postprocess)
     if position_matters:
-        ranker_2 = vibe_df.sem_map(ranker_prompt2, return_raw_outputs=True, suffix="ranker_output_2")
-        vibe_df = vibe_df.merge(ranker_2[["question", models[0], models[1], "preference", "ranker_output_2"]], on=["question", models[0], models[1], "preference"], how="left")
-        vibe_df["ranker_output_2"] = vibe_df["ranker_output_2"].apply(ranker_postprocess)
-        vibe_df["position_matters"] = vibe_df["ranker_output_1"] != -1 * vibe_df["ranker_output_2"]
+        ranker_2 = vibe_df.sem_map(
+            ranker_prompt2, return_raw_outputs=True, suffix="ranker_output_2"
+        )
+        vibe_df = vibe_df.merge(
+            ranker_2[
+                ["question", models[0], models[1], "preference", "ranker_output_2"]
+            ],
+            on=["question", models[0], models[1], "preference"],
+            how="left",
+        )
+        vibe_df["ranker_output_2"] = vibe_df["ranker_output_2"].apply(
+            ranker_postprocess
+        )
+        vibe_df["position_matters"] = (
+            vibe_df["ranker_output_1"] != -1 * vibe_df["ranker_output_2"]
+        )
         vibe_df["score"] = vibe_df.apply(
-            lambda row: row["ranker_output_1"] if not row["position_matters"] else 0, 
-            axis=1
+            lambda row: row["ranker_output_1"] if not row["position_matters"] else 0,
+            axis=1,
         )
         wandb.summary["position_matters"] = vibe_df["position_matters"].mean()
     else:
@@ -101,7 +138,16 @@ Model: {{A, B, equal, N/A, or unsure}}
 
     return vibe_df
 
-def main(data_path, models, num_proposal_samples=30, num_final_vibes=10, test=False, position_matters=False, project_name="vibecheck"):
+
+def main(
+    data_path,
+    models,
+    num_proposal_samples=30,
+    num_final_vibes=10,
+    test=False,
+    position_matters=False,
+    project_name="vibecheck",
+):
     # Initialize wandb
     wandb.init(project=project_name, name=f"{models[0]}_vs_{models[1]}", save_code=True)
 
@@ -120,23 +166,19 @@ def main(data_path, models, num_proposal_samples=30, num_final_vibes=10, test=Fa
     df = df[df["preference"].isin(models)].reset_index(drop=True)
 
     print(f"Preference Counts: {df['preference'].value_counts().to_dict()}")
-    wandb.summary["preference_counts"] = df['preference'].value_counts().to_dict()
+    wandb.summary["preference_counts"] = df["preference"].value_counts().to_dict()
     wandb.summary["data_size"] = len(df)
 
     # Create bar plot of preference distribution
-    pref_dist = df['preference'].value_counts()
-    fig = go.Figure(data=[
-        go.Bar(
-            x=pref_dist.index,
-            y=pref_dist.values,
-            marker_color='#2ecc71'
-        )
-    ])
+    pref_dist = df["preference"].value_counts()
+    fig = go.Figure(
+        data=[go.Bar(x=pref_dist.index, y=pref_dist.values, marker_color="#2ecc71")]
+    )
     fig.update_layout(
-        title='Model Preference Distribution',
-        xaxis_title='Model',
-        yaxis_title='Count',
-        template='plotly_white'
+        title="Model Preference Distribution",
+        xaxis_title="Model",
+        yaxis_title="Count",
+        template="plotly_white",
     )
     wandb.log({"preference_distribution": wandb.Html(fig.to_html())})
 
@@ -147,7 +189,7 @@ def main(data_path, models, num_proposal_samples=30, num_final_vibes=10, test=Fa
             f"Model 1:\n{row[models[0]]}\n\n"
             f"Model 2:\n{row[models[1]]}"
         ),
-        axis=1
+        axis=1,
     )
 
     # Propose vibes
@@ -168,14 +210,22 @@ If there are no substantive differences between the outputs, please respond with
 
     # Run on a subsample for the "train" split
     proposer_df = df.sample(num_proposal_samples, random_state=42)
-    proposer_df = proposer_df.sem_map(proposer_prompt_freeform, return_raw_outputs=True, suffix="differences")
+    proposer_df = proposer_df.sem_map(
+        proposer_prompt_freeform, return_raw_outputs=True, suffix="differences"
+    )
     proposer_df["differences"] = proposer_df["differences"].apply(proposer_postprocess)
     results = proposer_df[proposer_df["differences"].apply(lambda x: len(x) > 0)]
     results = results.explode("differences").reset_index(drop=True)
 
     # Cluster and reduce axes
-    results = results.sem_index("differences", "differences_index").sem_cluster_by("differences", 1)
-    summaries = results.sem_agg(create_reduce_prompt(num_final_vibes), group_by="cluster_id", suffix="reduced axes")
+    results = results.sem_index("differences", "differences_index").sem_cluster_by(
+        "differences", 1
+    )
+    summaries = results.sem_agg(
+        create_reduce_prompt(num_final_vibes),
+        group_by="cluster_id",
+        suffix="reduced axes",
+    )
     # summaries = results.sem_agg(create_reduce_prompt(num_final_vibes), suffix="reduced axes")
     summaries["reduced axes parsed"] = summaries["reduced axes"].apply(parse_axes)
     vibes = summaries.explode("reduced axes parsed")["reduced axes parsed"].to_list()
@@ -199,132 +249,152 @@ If there are no substantive differences between the outputs, please respond with
     print(vibe_df.columns)
 
     # Compute preference alignment
-    vibe_df["preference_feature"] = vibe_df["preference"].apply(lambda x: get_pref_score(x, models))
+    vibe_df["preference_feature"] = vibe_df["preference"].apply(
+        lambda x: get_pref_score(x, models)
+    )
     vibe_df["pref_score"] = vibe_df["score"] * vibe_df["preference_feature"]
 
-    agg_df = vibe_df.groupby("vibe").agg({"pref_score": "mean", "score": "mean"}).reset_index()
+    agg_df = (
+        vibe_df.groupby("vibe")
+        .agg({"pref_score": "mean", "score": "mean"})
+        .reset_index()
+    )
     wandb.log({"summary": wandb.Table(dataframe=agg_df)})
 
     # Get the aggregated data and parse descriptions
-    agg_df = vibe_df.groupby("vibe").agg({
-        "pref_score": "mean", 
-        "score": "mean"
-    }).reset_index()
+    agg_df = (
+        vibe_df.groupby("vibe")
+        .agg({"pref_score": "mean", "score": "mean"})
+        .reset_index()
+    )
 
     # Split vibe column into name and descriptions
-    desc_df = agg_df['vibe'].apply(parse_vibe_description)
+    desc_df = agg_df["vibe"].apply(parse_vibe_description)
     agg_df = pd.concat([agg_df, desc_df], axis=1)
 
-        # Create subplots for side-by-side visualization
+    # Create subplots for side-by-side visualization
     fig = make_subplots(
-        rows=1, 
+        rows=1,
         cols=2,
-        subplot_titles=('Preference Prediction', 'Model Identity'),
+        subplot_titles=("Preference Prediction", "Model Identity"),
         horizontal_spacing=0.1,
-        specs=[[{'type': 'bar'}, {'type': 'bar'}]]
+        specs=[[{"type": "bar"}, {"type": "bar"}]],
     )
 
     # Bar for preference coefficients (left plot)
     fig.add_trace(
         go.Bar(
-            y=agg_df['name'],
-            x=agg_df['pref_score'],
-            name='Preference Prediction',
-            orientation='h',
-            marker_color='#3498db',
+            y=agg_df["name"],
+            x=agg_df["pref_score"],
+            name="Preference Prediction",
+            orientation="h",
+            marker_color="#3498db",
             hovertemplate=(
-                '%{x:.4f}<br>' +
-                agg_df.apply(
-                    lambda row: row['high_desc'] if row['pref_score'] >= 0 else row['low_desc'], axis=1
-                ) +
-                '<extra></extra>'
-            )
+                "%{x:.4f}<br>"
+                + agg_df.apply(
+                    lambda row: (
+                        row["high_desc"] if row["pref_score"] >= 0 else row["low_desc"]
+                    ),
+                    axis=1,
+                )
+                + "<extra></extra>"
+            ),
         ),
-        row=1, col=1
+        row=1,
+        col=1,
     )
 
     # Bar for model identity coefficients (right plot)
     fig.add_trace(
         go.Bar(
-            y=agg_df['name'],
-            x=agg_df['score'],
-            name='Model Identity',
-            orientation='h',
-            marker_color='#2ecc71',
+            y=agg_df["name"],
+            x=agg_df["score"],
+            name="Model Identity",
+            orientation="h",
+            marker_color="#2ecc71",
             hovertemplate=(
-                '%{x:.4f}<br>' +
-                agg_df.apply(
-                    lambda row: row['high_desc'] if row['score'] >= 0 else row['low_desc'], axis=1
-                ) +
-                '<extra></extra>'
-            )
+                "%{x:.4f}<br>"
+                + agg_df.apply(
+                    lambda row: (
+                        row["high_desc"] if row["score"] >= 0 else row["low_desc"]
+                    ),
+                    axis=1,
+                )
+                + "<extra></extra>"
+            ),
         ),
-        row=1, col=2
+        row=1,
+        col=2,
     )
 
     fig.update_layout(
         title={
-            'text': 'Feature Importance Heuristics<br><sup>Mouse over bars to see descriptions of high/low values</sup>',
-            'xanchor': 'center',
-            'y': 0.95,
-            'x': 0.5,
-            'font': {'size': 20}
+            "text": "Feature Importance Heuristics<br><sup>Mouse over bars to see descriptions of high/low values</sup>",
+            "xanchor": "center",
+            "y": 0.95,
+            "x": 0.5,
+            "font": {"size": 20},
         },
-        template='plotly_white',
+        template="plotly_white",
         showlegend=True,
     )
 
     # Update x-axes
     fig.update_xaxes(
-        title_text=f'Seperability Score (Identity {models[0]} vs {models[1]})',
+        title_text=f"Seperability Score (Identity {models[0]} vs {models[1]})",
         zeroline=True,
         zerolinewidth=2,
-        zerolinecolor='black',
-        row=1, col=1
-    )
-    fig.update_xaxes(
-        title_text=f'Seperability Score (Preference {models[0]} vs {models[1]})',
-        zeroline=True,
-        zerolinewidth=2,
-        zerolinecolor='black',
-        row=1, col=2
-    )
-
-    # Update y-axes (hide right plot's y-axis)
-    fig.update_yaxes(
-        title_text='',
+        zerolinecolor="black",
         row=1,
         col=1,
-        ticksuffix='   '  # Add space after tick labels
     )
-    fig.update_yaxes(title_text='', showticklabels=False, row=1, col=2)
+    fig.update_xaxes(
+        title_text=f"Seperability Score (Preference {models[0]} vs {models[1]})",
+        zeroline=True,
+        zerolinewidth=2,
+        zerolinecolor="black",
+        row=1,
+        col=2,
+    )
+
+    fig.update_yaxes(
+        title_text="", row=1, col=1, ticksuffix="   " 
+    )
+    fig.update_yaxes(title_text="", showticklabels=False, row=1, col=2)
 
     wandb.log({"model_vibe_scores_plot": wandb.Html(fig.to_html())})
 
     # Filter out vibes with low separation or preference
     vibe_df = vibe_df[vibe_df["score"].abs() > 0.05]
     vibe_df = vibe_df[vibe_df["pref_score"].abs() > 0.05]
-    print(f"Retained {len(vibe_df.drop_duplicates('vibe'))} vibes with non-trivial separation/preference.")
+    print(
+        f"Retained {len(vibe_df.drop_duplicates('vibe'))} vibes with non-trivial separation/preference."
+    )
     print("Remaining vibes:\n" + "\n".join(vibe_df["vibe"].unique()))
 
-    # Prepare training/test data for logistic regression
     feature_df, X_pref, y_pref, y_identity = get_feature_df(vibe_df)
-    # feature_df_test, X_pref_test, y_pref_test, y_identity_test = get_feature_df(vibe_df, split="test")
-
-    # Train logistic regressions
-    preference_model, preference_coef_df, preference_accuracy_test, preference_acc_std = train_and_evaluate_model(
+    (
+        preference_model,
+        preference_coef_df,
+        preference_accuracy_test,
+        preference_acc_std,
+    ) = train_and_evaluate_model(
         X_pref, y_pref, feature_df.columns, "Preference Prediction"
     )
-    identity_model, identity_coef_df, identity_accuracy_test, identity_acc_std = train_and_evaluate_model(
-        X_pref, y_identity, feature_df.columns, "Model Identity Classification"
+    identity_model, identity_coef_df, identity_accuracy_test, identity_acc_std = (
+        train_and_evaluate_model(
+            X_pref, y_identity, feature_df.columns, "Model Identity Classification"
+        )
     )
 
-    wandb.log({
-        "preference_model_test_accuracy": preference_accuracy_test,
-        "identity_model_test_accuracy": identity_accuracy_test,
-        "preference_model_test_accuracy_std": preference_acc_std,
-        "identity_model_test_accuracy_std": identity_acc_std
-    })
+    wandb.log(
+        {
+            "preference_model_test_accuracy": preference_accuracy_test,
+            "identity_model_test_accuracy": identity_accuracy_test,
+            "preference_model_test_accuracy_std": preference_acc_std,
+            "identity_model_test_accuracy_std": identity_acc_std,
+        }
+    )
 
     # Merge coefficient data
     coef_df = identity_coef_df.merge(
@@ -332,104 +402,115 @@ If there are no substantive differences between the outputs, please respond with
     ).sort_values("coef_preference", ascending=False)
 
     # Parse vibe descriptions for visualization
-    desc_df = coef_df['vibe'].apply(parse_vibe_description)
+    desc_df = coef_df["vibe"].apply(parse_vibe_description)
     coef_df = pd.concat([coef_df, desc_df], axis=1)
 
     # Create subplots for side-by-side visualization
     fig = make_subplots(
-        rows=1, 
+        rows=1,
         cols=2,
-        subplot_titles=('Preference Prediction', 'Model Identity'),
+        subplot_titles=("Preference Prediction", "Model Identity"),
         horizontal_spacing=0.1,
-        specs=[[{'type': 'bar'}, {'type': 'bar'}]]
+        specs=[[{"type": "bar"}, {"type": "bar"}]],
     )
 
     # Bar for preference coefficients (left plot)
     fig.add_trace(
         go.Bar(
-            y=coef_df['name'],
-            x=coef_df['coef_preference'],
-            name='Preference Prediction',
-            orientation='h',
-            marker_color='#3498db',
+            y=coef_df["name"],
+            x=coef_df["coef_preference"],
+            name="Preference Prediction",
+            orientation="h",
+            marker_color="#3498db",
             error_x=dict(
-                type='data',
-                array=coef_df['coef_std_preference'],
+                type="data",
+                array=coef_df["coef_std_preference"],
                 visible=True,
-                color='#2c3e50'
+                color="#2c3e50",
             ),
             hovertemplate=(
-                '%{x:.4f} ± %{error_x:.4f}<br>' +
-                coef_df.apply(
-                    lambda row: row['high_desc'] if row['coef_preference'] >= 0 else row['low_desc'], axis=1
-                ) +
-                '<extra></extra>'
-            )
+                "%{x:.4f} ± %{error_x:.4f}<br>"
+                + coef_df.apply(
+                    lambda row: (
+                        row["high_desc"]
+                        if row["coef_preference"] >= 0
+                        else row["low_desc"]
+                    ),
+                    axis=1,
+                )
+                + "<extra></extra>"
+            ),
         ),
-        row=1, col=1
+        row=1,
+        col=1,
     )
 
     # Bar for model identity coefficients (right plot)
     fig.add_trace(
         go.Bar(
-            y=coef_df['name'],
-            x=coef_df['coef_modelID'],
-            name='Model Identity',
-            orientation='h',
-            marker_color='#2ecc71',
+            y=coef_df["name"],
+            x=coef_df["coef_modelID"],
+            name="Model Identity",
+            orientation="h",
+            marker_color="#2ecc71",
             error_x=dict(
-                type='data',
-                array=coef_df['coef_std_modelID'],
+                type="data",
+                array=coef_df["coef_std_modelID"],
                 visible=True,
-                color='#2c3e50'
+                color="#2c3e50",
             ),
             hovertemplate=(
-                '%{x:.4f} ± %{error_x:.4f}<br>' +
-                coef_df.apply(
-                    lambda row: row['high_desc'] if row['coef_modelID'] >= 0 else row['low_desc'], axis=1
-                ) +
-                '<extra></extra>'
-            )
+                "%{x:.4f} ± %{error_x:.4f}<br>"
+                + coef_df.apply(
+                    lambda row: (
+                        row["high_desc"]
+                        if row["coef_modelID"] >= 0
+                        else row["low_desc"]
+                    ),
+                    axis=1,
+                )
+                + "<extra></extra>"
+            ),
         ),
-        row=1, col=2
+        row=1,
+        col=2,
     )
 
     fig.update_layout(
         title={
-            'text': 'Feature Importance Coefficients<br><sup>Mouse over bars to see descriptions of high/low values</sup>',
-            'xanchor': 'center',
-            'y': 0.95,
-            'x': 0.5,
-            'font': {'size': 20}
+            "text": "Feature Importance Coefficients<br><sup>Mouse over bars to see descriptions of high/low values</sup>",
+            "xanchor": "center",
+            "y": 0.95,
+            "x": 0.5,
+            "font": {"size": 20},
         },
-        template='plotly_white',
+        template="plotly_white",
         showlegend=True,
     )
 
     # Update x-axes
     fig.update_xaxes(
-        title_text='Coefficient Value',
+        title_text="Coefficient Value",
         zeroline=True,
         zerolinewidth=2,
-        zerolinecolor='black',
-        row=1, col=1
+        zerolinecolor="black",
+        row=1,
+        col=1,
     )
     fig.update_xaxes(
-        title_text='Coefficient Value',
+        title_text="Coefficient Value",
         zeroline=True,
         zerolinewidth=2,
-        zerolinecolor='black',
-        row=1, col=2
+        zerolinecolor="black",
+        row=1,
+        col=2,
     )
 
     # Update y-axes (hide right plot's y-axis)
     fig.update_yaxes(
-        title_text='',
-        row=1,
-        col=1,
-        ticksuffix='   '  # Add space after tick labels
+        title_text="", row=1, col=1, ticksuffix="   "  # Add space after tick labels
     )
-    fig.update_yaxes(title_text='', showticklabels=False, row=1, col=2)
+    fig.update_yaxes(title_text="", showticklabels=False, row=1, col=2)
 
     wandb.log({"model_vibe_coef_plot": wandb.Html(fig.to_html())})
 
@@ -438,32 +519,62 @@ If there are no substantive differences between the outputs, please respond with
     coef_df.to_csv("vibecheck_coefficients.csv", index=False)
 
     # Log final data
-    wandb.log({
-        "coefficient_data": wandb.Table(dataframe=coef_df)
-    })
+    wandb.log({"coefficient_data": wandb.Table(dataframe=coef_df)})
 
     # Close wandb run
     wandb.finish()
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description='Run VibeCheck analysis on model outputs.')
-    parser.add_argument('--data_path', type=str, required=True,
-                        help='Path to the CSV file containing model outputs')
-    parser.add_argument('--models', nargs="+", default=["command_xlarge_beta", "TNLGv2"],
-                        help='Models to compare')
-    parser.add_argument('--num_proposal_samples', type=int, default=30,
-                        help='Number of samples to use for proposing vibes')
-    parser.add_argument('--project', type=str, default="vibecheck",
-                        help='Wandb project name')
-    parser.add_argument('--test', action='store_true', 
-                        help='Run in test mode')
-    parser.add_argument('--position_matters', action='store_true', 
-                        help='Rerun ranker with different positions')
-    parser.add_argument('--num_final_vibes', type=int, default=10,
-                        help='Number of final vibes to use for analysis')
-    parser.add_argument('--solver', type=str, default='elasticnet',
-                        help='Solver to use for logistic regression (standard, lasso, elasticnet)')
+    parser = argparse.ArgumentParser(
+        description="Run VibeCheck analysis on model outputs."
+    )
+    parser.add_argument(
+        "--data_path",
+        type=str,
+        required=True,
+        help="Path to the CSV file containing model outputs",
+    )
+    parser.add_argument(
+        "--models",
+        nargs="+",
+        default=["command_xlarge_beta", "TNLGv2"],
+        help="Models to compare",
+    )
+    parser.add_argument(
+        "--num_proposal_samples",
+        type=int,
+        default=30,
+        help="Number of samples to use for proposing vibes",
+    )
+    parser.add_argument(
+        "--project", type=str, default="vibecheck", help="Wandb project name"
+    )
+    parser.add_argument("--test", action="store_true", help="Run in test mode")
+    parser.add_argument(
+        "--position_matters",
+        action="store_true",
+        help="Rerun ranker with different positions",
+    )
+    parser.add_argument(
+        "--num_final_vibes",
+        type=int,
+        default=10,
+        help="Number of final vibes to use for analysis",
+    )
+    parser.add_argument(
+        "--solver",
+        type=str,
+        default="elasticnet",
+        help="Solver to use for logistic regression (standard, lasso, elasticnet)",
+    )
 
     args = parser.parse_args()
-    main(args.data_path, args.models, args.num_proposal_samples, args.num_final_vibes, args.test, args.position_matters)
+    main(
+        args.data_path,
+        args.models,
+        args.num_proposal_samples,
+        args.num_final_vibes,
+        args.test,
+        args.position_matters,
+    )
