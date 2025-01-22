@@ -79,7 +79,6 @@ Here is the property and the two responses:
 Remember to be as objective as possible and strictly adhere to the response format.
 """
     )
-
     vibe_dfs = []
     for vibe in vibes:
         vibe_df = df.copy()
@@ -142,7 +141,7 @@ Remember to be as objective as possible and strictly adhere to the response form
     )
     
     wandb.log({"Vibe Scoring/score_value_counts_plot": wandb.Html(fig.to_html())})
-    return vibe_df
+    return vibe_df, fig
 
 
 def create_reduce_prompt(num_reduced_axes: int):
@@ -221,7 +220,7 @@ Remember that these properties should be human interpretable, concise (<= 15 wor
     return vibes
 
 
-def get_examples_for_vibe(vibe_df: pd.DataFrame, vibe: str, models: List[str], num_examples: int = 5):
+def get_examples_for_vibe(vibe_df: pd.DataFrame, vibe: str, model: str, num_examples: int = 5):
     """Get example pairs where the given vibe was strongly present."""
     vibe_examples = vibe_df[(vibe_df["vibe"] == vibe) & (vibe_df["score"].abs() > 0.0)]
     examples = []
@@ -229,8 +228,7 @@ def get_examples_for_vibe(vibe_df: pd.DataFrame, vibe: str, models: List[str], n
         examples.append(
             {
                 "prompt": row["question"],
-                "output_a": row[models[0]],
-                "output_b": row[models[1]],
+                f"{model}_output": row[model],
                 "score": row["score"],
                 "core_output": row["raw_outputranker_output_1"],
             }
@@ -272,6 +270,42 @@ def create_vibe_correlation_plot(vibe_df: pd.DataFrame, model: str):
     )
 
     return fig
+
+
+def create_gradio_interface(vibe_df: pd.DataFrame, model: str, output_dir: str, model_vibe_scores_plot: go.Figure, score_dist_plot: go.Figure):
+    """Creates a Gradio interface for visualizing VibeCheck results."""
+    import gradio as gr
+        
+    def show_examples(selected_vibe):
+        examples = get_examples_for_vibe(vibe_df, selected_vibe, model, num_examples=5)
+        markdown = ""
+        for i, ex in enumerate(examples, 1):
+            markdown += f"### Example {i} ({selected_vibe})\n"
+            markdown += f"**Prompt:** {ex['prompt']}\n\n"
+            markdown += f"**Response:**\n{ex[f'{model}_output']}\n\n"
+            markdown += f"**Score:** {ex['score']}\n\n"
+            markdown += f"**Judge Output:**\n{ex['core_output']}\n\n"
+            markdown += "---\n\n"
+        return markdown
+    
+    with gr.Blocks() as app:
+        gr.Markdown("# VibeCheck Analysis Results")
+        
+        with gr.Row():
+            with gr.Column():
+                gr.Plot(model_vibe_scores_plot)
+            with gr.Column():
+                gr.Plot(score_dist_plot)
+        
+        gr.Markdown("## Example Responses")
+        vibe_dropdown = gr.Dropdown(
+            choices=sorted(vibe_df["vibe"].unique()),
+            label="Select a vibe to see examples",
+        )
+        examples_md = gr.Markdown()
+        vibe_dropdown.change(show_examples, vibe_dropdown, examples_md)
+        
+    return app
 
 
 def main(
@@ -328,23 +362,24 @@ def main(
 
     # Create bar plot of preference distribution
     pref_dist = df["preference"].value_counts()
-    fig = go.Figure(
+    preference_distribution_plot = go.Figure(
         data=[go.Bar(x=pref_dist.index, y=pref_dist.values, marker_color="#2ecc71")]
     )
-    fig.update_layout(
+    preference_distribution_plot.update_layout(
         title="Model Preference Distribution",
         xaxis_title="Model",
         yaxis_title="Count",
         template="plotly_white",
     )
-    wandb.log({"preference_distribution": wandb.Html(fig.to_html())})
-    fig.write_html(os.path.join(output_dir, "preference_distribution.html"))
+    wandb.log({"preference_distribution": wandb.Html(preference_distribution_plot.to_html())})
+    preference_distribution_plot.write_html(os.path.join(output_dir, "preference_distribution.html"))
     vibes = propose_vibes(
         df,
         model,
         num_proposal_samples=num_proposal_samples,
         num_final_vibes=num_final_vibes,
     )
+    print("Vibes:\n" + "\n".join(vibes))
 
     # Log vibes to wandb
     vibes_df = pd.DataFrame({"vibes": vibes})
@@ -358,11 +393,11 @@ def main(
     lm = LM(model="gpt-4o-mini", cache=cache)
     lotus.settings.configure(lm=lm, enable_cache=True)
     if test:
-        vibe_df = rank_axes(
+        vibe_df, score_dist_plot = rank_axes(
             vibes[:3], df, model
         )
     else:
-        vibe_df = rank_axes(
+        vibe_df, score_dist_plot = rank_axes(
             vibes, df, model
         )
 
@@ -370,6 +405,7 @@ def main(
     vibe_df["pref_score"] = vibe_df["score"] * vibe_df["preference"].apply(lambda x: 1 if x == model else 0)
 
     wandb.log({"Vibe Scoring/ranker_results": wandb.Table(dataframe=vibe_df)})
+    wandb.log({"Vibe Scoring/score_dist_plot": wandb.Html(score_dist_plot.to_html())})
     vibe_df.to_csv(os.path.join(output_dir, "vibe_df.csv"), index=False)
 
     agg_df = (
@@ -379,13 +415,24 @@ def main(
     )
     wandb.log({"summary": wandb.Table(dataframe=agg_df)})
 
-    # plot bars of score and pref_score
-    fig = go.Figure()
-    fig.add_trace(go.Bar(x=vibe_df["vibe"], y=vibe_df["score"], name="Score"))
-    fig.add_trace(go.Bar(x=vibe_df["vibe"], y=vibe_df["pref_score"], name="Preference Score"))
-    fig.update_layout(title="Vibe Scores", xaxis_title="Vibe", yaxis_title="Score")
-    wandb.log({"Vibe Plots/model_vibe_scores_plot": wandb.Html(fig.to_html())})
-    fig.write_html(os.path.join(output_dir, "model_vibe_scores_plot.html"))
+    # plot average scores per vibe
+    model_vibe_scores_plot = go.Figure()
+    model_vibe_scores_plot.add_trace(go.Bar(
+        y=agg_df["vibe"],  # vibes on y-axis
+        x=agg_df["score"],  # average scores on x-axis
+        orientation='h',    # horizontal bars
+        text=agg_df["score"].round(2),  # show score values on bars
+        textposition='auto',
+    ))
+    model_vibe_scores_plot.update_layout(
+        title="Average Vibe Scores",
+        xaxis_title="Average Score",
+        yaxis_title="Vibe",
+        height=max(400, len(agg_df) * 30),  # dynamic height based on number of vibes
+        margin=dict(l=200)  # add left margin for vibe labels
+    )
+    wandb.log({"Vibe Plots/model_vibe_scores_plot": wandb.Html(model_vibe_scores_plot.to_html())})
+    model_vibe_scores_plot.write_html(os.path.join(output_dir, "model_vibe_scores_plot.html"))
     # Filter out vibes with low separation or preference
     vibe_df = vibe_df[vibe_df["score"].abs() > 0.05]
     vibe_df = vibe_df[vibe_df["pref_score"].abs() > 0.05]
@@ -401,6 +448,11 @@ def main(
 
     # Close wandb run
     wandb.finish()
+    
+    # Launch Gradio interface if requested
+    if gradio:
+        app = create_gradio_interface(vibe_df, model, output_dir, model_vibe_scores_plot, score_dist_plot)
+        app.launch(share=True)
 
 
 if __name__ == "__main__":
