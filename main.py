@@ -121,7 +121,7 @@ Remember to be as objective as possible and strictly adhere to the response form
             lambda row: row["ranker_output_1"] if not row["position_matters"] else 0,
             axis=1,
         )
-        wandb.summary["position_matters"] = vibe_df["position_matters"].mean()
+        wandb.summary["prop_position_collisions"] = vibe_df["position_matters"].mean()
     else:
         vibe_df["score"] = vibe_df["ranker_output_1"]
 
@@ -187,7 +187,7 @@ If there are no substantive differences between the outputs, please respond with
     )
 
     proposer_df["differences"] = proposer_df["differences"].apply(proposer_postprocess)
-    wandb.log({"proposer_results": wandb.Table(dataframe=proposer_df)})
+    wandb.log({"Vibe Proposer/proposer_results": wandb.Table(dataframe=proposer_df)})
     results = proposer_df[proposer_df["differences"].apply(lambda x: len(x) > 0)]
     results = results.explode("differences").reset_index(drop=True)
 
@@ -329,6 +329,7 @@ def main(
     single_position_rank=False,
     project_name="vibecheck",
     proposer_only=False,
+    no_holdout_set=False,
     gradio=False,
 ):
     # Initialize wandb
@@ -349,6 +350,9 @@ def main(
     df = pd.read_csv(data_path)
     if test:
         df = df.sample(100, random_state=42)
+    if "preference" not in df.columns:
+        raise ValueError("Preference column not found in dataframe. Run get_preference_labels.py first")
+    
     df = df[df["preference"].isin(models)].reset_index(drop=True)
 
     print(f"Preference Counts: {df['preference'].value_counts().to_dict()}")
@@ -397,7 +401,7 @@ def main(
     )
     vibe_df["pref_score"] = vibe_df["score"] * vibe_df["preference_feature"]
 
-    wandb.log({"ranker_results": wandb.Table(dataframe=vibe_df)})
+    wandb.log({"Vibe Scoring/ranker_results": wandb.Table(dataframe=vibe_df)})
     vibe_df.to_csv(os.path.join(output_dir, "vibe_df.csv"), index=False)
 
     agg_df = (
@@ -423,7 +427,7 @@ def main(
         main_title="Vibe Heuristics",
         models=models
     )
-    wandb.log({"model_vibe_scores_plot": wandb.Html(fig.to_html())})
+    wandb.log({"Vibe Plots/model_vibe_scores_plot": wandb.Html(fig.to_html())})
     fig.write_html(os.path.join(output_dir, "model_vibe_scores_plot.html"))
     # Filter out vibes with low separation or preference
     vibe_df = vibe_df[vibe_df["score"].abs() > 0.05]
@@ -433,11 +437,6 @@ def main(
     )
     print("Remaining vibes:\n" + "\n".join(vibe_df["vibe"].unique()))
 
-    # After creating vibe_df and before training models, add:
-    corr_plot = create_vibe_correlation_plot(vibe_df, models)
-    wandb.log({"vibe_correlations": wandb.Html(corr_plot.to_html())})
-    corr_plot.write_html("vibe_correlations.html")
-
     # Train Preference Prediction and Model Identity Classification Models
     feature_df, X_pref, y_pref, y_identity = get_feature_df(vibe_df)
     (
@@ -446,11 +445,11 @@ def main(
         preference_accuracy_test,
         preference_acc_std,
     ) = train_and_evaluate_model(
-        X_pref, y_pref, feature_df.columns, "Preference Prediction", solver="elasticnet"
+        X_pref, y_pref, feature_df.columns, split_train_test=not no_holdout_set, solver="elasticnet"
     )
     identity_model, identity_coef_df, identity_accuracy_test, identity_acc_std = (
         train_and_evaluate_model(
-            X_pref, y_identity, feature_df.columns, "Model Identity Classification", solver="elasticnet"
+            X_pref, y_identity, feature_df.columns, split_train_test=not no_holdout_set,solver="elasticnet",
         )
     )
 
@@ -478,12 +477,18 @@ def main(
         models=models,
         error_cols=["coef_std_modelID", "coef_std_preference"]
     )
-    wandb.log({"model_vibe_coef_plot": wandb.Html(fig.to_html())})
+    wandb.log({"Vibe Plots/model_vibe_coef_plot": wandb.Html(fig.to_html())})
     fig.write_html(os.path.join(output_dir, "model_vibe_coef_plot.html"))
     coef_df.to_csv(os.path.join(output_dir, "vibecheck_coefficients.csv"), index=False)
 
     # Log final data
     wandb.log({"coefficient_data": wandb.Table(dataframe=coef_df)})
+
+    # After creating vibe_df and before training models, add:
+    corr_plot = create_vibe_correlation_plot(vibe_df, models)
+    wandb.log({"Vibe Scoring/vibe_correlations": wandb.Html(corr_plot.to_html())})
+    corr_plot.write_html(os.path.join(output_dir, "vibe_correlations.html"))
+
 
     # Close wandb run
     wandb.finish()
@@ -543,6 +548,9 @@ if __name__ == "__main__":
     parser.add_argument(
         "--gradio", action="store_true", help="Run the Gradio app"
     )
+    parser.add_argument(
+        "--no_holdout_set", action="store_true", help="Don't split into a holdout set"
+    )
 
     args = parser.parse_args()
     main(
@@ -554,5 +562,6 @@ if __name__ == "__main__":
         args.single_position_rank,
         args.project,
         args.proposer_only,
+        args.no_holdout_set,
         args.gradio,
     )
