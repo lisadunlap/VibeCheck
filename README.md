@@ -1,17 +1,15 @@
-# Give your generative models a vibe check :D
-### VibeCheck: Discover and Quantify Qualitative Differences in Large Language Models
-Lisa Dunlap, Krishna Mandal, Trevor Darrell, Jacob Steinhardt, Joseph E. Gonzalez
+# Give your generative models a ✨vibe check✨
 
-Paper link [here](https://arxiv.org/abs/2410.12851), joke version of paper coming soon 
+
+### [VibeCheck: Discover and Quantify Qualitative Differences in Large Language Models](https://arxiv.org/abs/2410.12851)
+Lisa Dunlap, Krishna Mandal, Trevor Darrell, Jacob Steinhardt, Joseph E. Gonzalez
 
 <p align="center">
   <img src="method_vibecheck.png" width="800">
 </p>
 
 
-**Still cleaning this up:** I got distracted trying to implement some causal inference stuff...
-
-**I would follow demo.ipynb, which uses LOTUS to perform LLM operations over your dataframe. I think I can reduce this whole repo into like 3 files with some refactoring to include this.**
+**This is a simplified version of the VibeCheck paper.** Original code is in `_deprecated` and should still work, it's just very messy. Still working on adding all the functionality of the orignal code but the core functionality is here and the visualizations are much better.
 
 ## Data
 
