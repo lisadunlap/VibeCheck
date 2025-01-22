@@ -64,12 +64,27 @@ import argparse
 
 def __main__():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--data_path", type=str, default="data/helm/claude_gemini_gpt_math_cot_bigger.csv")
     parser.add_argument(
-        "--models", nargs="+", default=["anthropic/claude-3-5-sonnet-20240620", "openai/gpt-4o-2024-08-06"]
+        "--data_path",
+        type=str,
+        default="data/helm/claude_gemini_gpt_math_cot_bigger.csv",
     )
-    parser.add_argument("--output_path", type=str, default="data/helm/claude_gemini_gpt_math_cot_bigger_w_pref.csv")
-    parser.add_argument("--judge_model", type=str, default="gpt-4o", help="model to use for judging preference")
+    parser.add_argument(
+        "--models",
+        nargs="+",
+        default=["anthropic/claude-3-5-sonnet-20240620", "openai/gpt-4o-2024-08-06"],
+    )
+    parser.add_argument(
+        "--output_path",
+        type=str,
+        default="data/helm/claude_gemini_gpt_math_cot_bigger_w_pref.csv",
+    )
+    parser.add_argument(
+        "--judge_model",
+        type=str,
+        default="gpt-4o",
+        help="model to use for judging preference",
+    )
     parser.add_argument("--test", action="store_true")
     args = parser.parse_args()
 

@@ -8,6 +8,8 @@ import lotus
 from lotus.models import LM, SentenceTransformersRM
 from lotus.cache import CacheConfig, CacheType, CacheFactory
 
+from typing import List
+
 from utils import (
     proposer_postprocess,
     parse_axes,
@@ -19,7 +21,7 @@ from utils import (
 )
 
 
-def rank_axes(vibes, df, models, single_position_rank=False):
+def rank_axes(vibes: List[str], df: pd.DataFrame, models: List[str], single_position_rank: bool = False):
     """
     Ranks the two model outputs across the given vibes (axes) using LOTUS ranking prompts.
     """
@@ -144,7 +146,7 @@ Each property should be <= 10 words. Order your final list of properties by how 
 
 
 def propose_vibes(
-    df, models, num_proposal_samples=30, num_final_vibes=10, batch_size=5
+    df: pd.DataFrame, models: List[str], num_proposal_samples: int = 30, num_final_vibes: int = 10, batch_size: int = 5
 ):
     proposer_prompt_freeform = """
 You are a machine learning researcher trying to figure out the major differences between the behaviors of two llms by finding differences in their responses to the same set of questions and seeing if these differences correspond with user preferences. Write down as many differences as you can find between the two outputs. Please format your differences as a list of properties that appear more in one output than the other.
@@ -206,26 +208,33 @@ If there are no substantive differences between the outputs, please respond with
     return vibes
 
 
-def get_examples_for_vibe(vibe_df, vibe, models, num_examples=5):
+def get_examples_for_vibe(vibe_df: pd.DataFrame, vibe: str, models: List[str], num_examples: int = 5):
     """Get example pairs where the given vibe was strongly present."""
-    vibe_examples = vibe_df[(vibe_df['vibe'] == vibe) & (vibe_df['score'].abs() > 0.0)]
+    vibe_examples = vibe_df[(vibe_df["vibe"] == vibe) & (vibe_df["score"].abs() > 0.0)]
     examples = []
     for _, row in vibe_examples.head(num_examples).iterrows():
-        examples.append({
-            'prompt': row['question'],
-            'output_a': row[models[0]],
-            'output_b': row[models[1]],
-            'score': row['score'],
-            'core_output': row['raw_outputranker_output_1']
-        })
+        examples.append(
+            {
+                "prompt": row["question"],
+                "output_a": row[models[0]],
+                "output_b": row[models[1]],
+                "score": row["score"],
+                "core_output": row["raw_outputranker_output_1"],
+            }
+        )
     return examples
 
-def create_gradio_app(vibe_df, models, coef_df, corr_plot):
+
+def create_gradio_app(vibe_df: pd.DataFrame, models: List[str], coef_df: pd.DataFrame, corr_plot: go.Figure):
     import gradio as gr
 
     # Create the plots
-    agg_df = vibe_df.groupby("vibe").agg({"pref_score": "mean", "score": "mean"}).reset_index()
-    
+    agg_df = (
+        vibe_df.groupby("vibe")
+        .agg({"pref_score": "mean", "score": "mean"})
+        .reset_index()
+    )
+
     # Create plots and convert them to HTML strings
     heuristics_plot = create_side_by_side_plot(
         df=agg_df,
@@ -233,9 +242,9 @@ def create_gradio_app(vibe_df, models, coef_df, corr_plot):
         x_cols=["score", "pref_score"],
         titles=("Model Identity", "Preference Prediction"),
         main_title="Vibe Heuristics",
-        models=models
+        models=models,
     )
-    
+
     coef_plot = create_side_by_side_plot(
         df=coef_df,
         y_col="vibe",
@@ -243,9 +252,9 @@ def create_gradio_app(vibe_df, models, coef_df, corr_plot):
         titles=("Model Identity", "Preference Prediction"),
         main_title="Vibe Model Coefficients",
         models=models,
-        error_cols=["coef_std_modelID", "coef_std_preference"]
+        error_cols=["coef_std_modelID", "coef_std_preference"],
     )
-    
+
     def show_examples(vibe):
         examples = get_examples_for_vibe(vibe_df, vibe, models)
         markdown = ""
@@ -257,10 +266,10 @@ def create_gradio_app(vibe_df, models, coef_df, corr_plot):
             markdown += f"**Ranker Output:**\n{ex['core_output']}\n\n"
             markdown += "---\n\n"
         return markdown
-    
+
     with gr.Blocks() as app:
         gr.Markdown("# <center>It's all about the ✨vibes✨</center>")
-        
+
         with gr.Accordion("Plots", open=True):
             with gr.Row():
                 gr.Plot(heuristics_plot)
@@ -270,72 +279,89 @@ def create_gradio_app(vibe_df, models, coef_df, corr_plot):
 
             with gr.Row():
                 gr.Plot(corr_plot)
-        
+
         gr.Markdown("## Vibe Examples")
         vibe_dropdown = gr.Dropdown(
-            choices=vibe_df['vibe'].unique().tolist(),
-            label="Select a vibe to see examples"
+            choices=vibe_df["vibe"].unique().tolist(),
+            label="Select a vibe to see examples",
         )
         examples_output = gr.Markdown()
         vibe_dropdown.change(
-            fn=show_examples,
-            inputs=[vibe_dropdown],
-            outputs=[examples_output]
+            fn=show_examples, inputs=[vibe_dropdown], outputs=[examples_output]
         )
-    
+
     return app
 
-def create_vibe_correlation_plot(vibe_df, models):
+
+def create_vibe_correlation_plot(vibe_df: pd.DataFrame, models: List[str]):
     """Creates a correlation matrix plot for vibe scores."""
     # Pivot the dataframe to get vibe scores in columns
     vibe_pivot = vibe_df.pivot_table(
-        index=['question', models[0], models[1]], 
-        columns='vibe', 
-        values='score'
+        index=["question", models[0], models[1]], columns="vibe", values="score"
     ).reset_index()
-    
+
     # Calculate correlation matrix for just the vibe scores
     vibe_cols = vibe_pivot.columns[3:]  # Skip the index columns
     corr_matrix = vibe_pivot[vibe_cols].corr()
-    
+
     # Create heatmap
-    fig = go.Figure(data=go.Heatmap(
-        z=corr_matrix,
-        x=corr_matrix.columns,
-        y=corr_matrix.columns,
-        colorscale='RdBu',
-        zmid=0,
-        text=np.round(corr_matrix, 2),
-        texttemplate='%{text}',
-        textfont={"size": 10},
-        hoverongaps=False,
-    ))
-    
+    fig = go.Figure(
+        data=go.Heatmap(
+            z=corr_matrix,
+            x=corr_matrix.columns,
+            y=corr_matrix.columns,
+            colorscale="RdBu",
+            zmid=0,
+            text=np.round(corr_matrix, 2),
+            texttemplate="%{text}",
+            textfont={"size": 10},
+            hoverongaps=False,
+        )
+    )
+
     fig.update_layout(
         title="Vibe Score Correlations",
         xaxis_tickangle=-45,
         width=800,
         height=800,
     )
-    
+
     return fig
 
+
 def main(
-    data_path,
-    models,
-    num_proposal_samples=30,
-    num_final_vibes=10,
-    test=False,
-    single_position_rank=False,
-    project_name="vibecheck",
-    proposer_only=False,
-    no_holdout_set=False,
-    gradio=False,
+    data_path: str,
+    models: List[str],
+    num_proposal_samples: int = 30,
+    num_final_vibes: int = 10,
+    test: bool = False,
+    single_position_rank: bool = False,
+    project_name: str = "vibecheck",
+    proposer_only: bool = False,
+    no_holdout_set: bool = False,
+    gradio: bool = False,
 ):
+    """Run VibeCheck analysis to identify and analyze behavioral differences between two language models.
+
+    Args:
+        data_path (str): Path to CSV file containing model outputs. Must include columns for model responses 
+            and a 'preference' column indicating which model output was preferred.
+        models (List[str]): List of two model names to compare. These should match the column names in the CSV.
+        num_proposal_samples (int, optional): Number of samples to use when proposing vibes. Defaults to 30.
+        num_final_vibes (int, optional): Maximum number of vibes to use in final analysis. Defaults to 10.
+        test (bool, optional): If True, runs analysis on a small subset of data for testing. Defaults to False.
+        single_position_rank (bool, optional): If True, only ranks model outputs in one position order.
+            Faster but may introduce position bias. Defaults to False.
+        project_name (str, optional): Name of the Weights & Biases project. Defaults to "vibecheck".
+        proposer_only (bool, optional): If True, only runs the vibe proposal step without analysis. Defaults to False.
+        no_holdout_set (bool, optional): If True, uses all data for training without a test set. Defaults to False.
+        gradio (bool, optional): If True, launches a Gradio interface after analysis. Defaults to False.
+
+    Raises:
+        ValueError: If 'preference' column is not found in the input CSV file.
+    """
     # Initialize wandb
-    wandb.init(
-        project=project_name, name=f"{models[0]}_vs_{models[1]}", save_code=True
-    )
+    wandb.init(project=project_name, name=f"{models[0]}_vs_{models[1]}", save_code=True)
 
     output_dir = f"outputs/{data_path.split('/')[-1].replace('.csv', '')}_{models[0]}_vs_{models[1]}"
     os.makedirs(output_dir, exist_ok=True)
@@ -351,8 +377,10 @@ def main(
     if test:
         df = df.sample(100, random_state=42)
     if "preference" not in df.columns:
-        raise ValueError("Preference column not found in dataframe. Run get_preference_labels.py first")
-    
+        raise ValueError(
+            "Preference column not found in dataframe. Run get_preference_labels.py first"
+        )
+
     df = df[df["preference"].isin(models)].reset_index(drop=True)
 
     print(f"Preference Counts: {df['preference'].value_counts().to_dict()}")
@@ -391,9 +419,13 @@ def main(
     lm = LM(model="gpt-4o-mini", cache=cache)
     lotus.settings.configure(lm=lm, enable_cache=True)
     if test:
-        vibe_df = rank_axes(vibes[:3], df, models, single_position_rank=single_position_rank)
+        vibe_df = rank_axes(
+            vibes[:3], df, models, single_position_rank=single_position_rank
+        )
     else:
-        vibe_df = rank_axes(vibes, df, models, single_position_rank=single_position_rank)
+        vibe_df = rank_axes(
+            vibes, df, models, single_position_rank=single_position_rank
+        )
 
     # Compute preference alignment
     vibe_df["preference_feature"] = vibe_df["preference"].apply(
@@ -425,7 +457,7 @@ def main(
         x_cols=["score", "pref_score"],
         titles=("Model Identity", "Preference Prediction"),
         main_title="Vibe Heuristics",
-        models=models
+        models=models,
     )
     wandb.log({"Vibe Plots/model_vibe_scores_plot": wandb.Html(fig.to_html())})
     fig.write_html(os.path.join(output_dir, "model_vibe_scores_plot.html"))
@@ -445,11 +477,19 @@ def main(
         preference_accuracy_test,
         preference_acc_std,
     ) = train_and_evaluate_model(
-        X_pref, y_pref, feature_df.columns, split_train_test=not no_holdout_set, solver="elasticnet"
+        X_pref,
+        y_pref,
+        feature_df.columns,
+        split_train_test=not no_holdout_set,
+        solver="elasticnet",
     )
     identity_model, identity_coef_df, identity_accuracy_test, identity_acc_std = (
         train_and_evaluate_model(
-            X_pref, y_identity, feature_df.columns, split_train_test=not no_holdout_set,solver="elasticnet",
+            X_pref,
+            y_identity,
+            feature_df.columns,
+            split_train_test=not no_holdout_set,
+            solver="elasticnet",
         )
     )
 
@@ -475,7 +515,7 @@ def main(
         titles=("Model Identity", "Preference Prediction"),
         main_title="Vibe Model Coefficients",
         models=models,
-        error_cols=["coef_std_modelID", "coef_std_preference"]
+        error_cols=["coef_std_modelID", "coef_std_preference"],
     )
     wandb.log({"Vibe Plots/model_vibe_coef_plot": wandb.Html(fig.to_html())})
     fig.write_html(os.path.join(output_dir, "model_vibe_coef_plot.html"))
@@ -488,7 +528,6 @@ def main(
     corr_plot = create_vibe_correlation_plot(vibe_df, models)
     wandb.log({"Vibe Scoring/vibe_correlations": wandb.Html(corr_plot.to_html())})
     corr_plot.write_html(os.path.join(output_dir, "vibe_correlations.html"))
-
 
     # Close wandb run
     wandb.finish()
@@ -545,9 +584,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--proposer_only", action="store_true", help="Only run the proposer"
     )
-    parser.add_argument(
-        "--gradio", action="store_true", help="Run the Gradio app"
-    )
+    parser.add_argument("--gradio", action="store_true", help="Run the Gradio app")
     parser.add_argument(
         "--no_holdout_set", action="store_true", help="Don't split into a holdout set"
     )

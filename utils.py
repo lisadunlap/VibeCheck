@@ -11,114 +11,6 @@ from typing import List
 from plotly.subplots import make_subplots
 from plotly import graph_objects as go
 
-def parse_bullets(text: str):
-    """
-    Parse bullet points from text.
-    """
-    lines = text.split("\n")
-    bullets = []
-    for line in lines:
-        if line.strip().startswith("-") or line.strip().startswith("*"):
-            bullets.append(line.strip().lstrip("- *").strip())
-    return bullets
-
-
-def proposer_postprocess(text: str):
-    """
-    Process the output from the proposer.
-    """
-    bullets = parse_bullets(text)
-    bullets = [b.replace("**", "").replace("-", "") for b in bullets]
-    return bullets
-
-
-def create_reduce_prompt(num_reduced_axes: int):
-    return f"""Below is a list of axes with a description of what makes a piece of text low or high on this axis. I would like to summarize this list to at most {num_reduced_axes} representative axes with concise descriptions.
-
-Here is the list of axes:
-{{differences}}
-
-These axes should contain only one concept and should be human interpretable. The axis title should be a single concept (does not contain "and", "or", etc.). The descriptions of what makes a piece of text high or low on the axis should be unambiguous and mutually exclusive.
-
-Some examples of BAD axes include:
-- "Configuration Clarity: High: Clearly defined structure and purpose. Low: Vaguely defined, minimal purpose." - unclear what the axis is about
-- "Language and Communication: High: Varied/precise, complex structure. Low: Straightforward, simple or general language." - describes two separate axes, description is not mutually exclusive. Axis title contains "and", indicating multiple axes.
-- "Content Quality: High: High quality, engaging, informative. Low: Low quality, unengaging, uninformative." - this describes multiple axes and "quality" is not well defined
-
-Some examples of GOOD axes include:
-- "Formality: High: Informal language. Low: Formal language."
-- "Tone: High: Sarcastic tone. Low: Serious tone."
-- "Efficiency (coding): High: Optimized for runtime and memory. Low: Brute force algorithms with high memory usage."
-
-Make sure the high and low descriptions are as concise as possible. Please return the simplified list of <={num_reduced_axes} axes with any similar, unclear, or uncommon axes removed. Remember that there may be <{num_reduced_axes} axes which are unique, so double check that you have not returned any simplified axes which are very similar to each other.
-
-Please maintain the format of the original axes and return a numbered list. Each element should be structured as follows:
-"{{{{axis_name}}}}: High: {{{{high description}}}} Low: {{{{low description}}}}" 
-"""
-
-
-def parse_axes(text: str):
-    """
-    Parse axes from text.
-    """
-    lines = [line.strip() for line in text.split("\n") if line.strip()]
-    axes = []
-    for line in lines:
-        cleaned = line.strip('1234567890. -"')
-        cleaned = cleaned.replace("**", "")
-        if cleaned:
-            axes.append(cleaned)
-    return axes
-
-
-def get_pref_score(preference: str, models: list):
-    """
-    Get preference score based on model preference.
-    """
-    if preference == models[0]:
-        return 1
-    elif preference == models[1]:
-        return -1
-    else:
-        return 0
-
-
-def ranker_postprocess(output: str) -> int:
-    """
-    Postprocess the ranker's output to extract whether model A is favored (1), B is favored (-1), or tie/NA (0).
-    """
-    try:
-        output = output.replace("Output ", "").replace("output ", "")
-        output = re.sub(r"[#*]", "", output)
-        score_pattern = re.compile(r"Model: (A|B|N/A|unsure|equal)", re.I | re.M)
-        score = score_pattern.findall(output)
-        if not score:
-            return 0
-        if score[0].lower() == "a":
-            return 1
-        elif score[0].lower() == "b":
-            return -1
-        else:
-            return 0
-    except Exception as e:
-        print(f"Error in ranker_postprocess: {output}")
-        return 0
-
-
-def parse_vibe_description(vibe_text: str) -> pd.Series:
-    """
-    Split an axis string (like "Complexity: High: ... Low: ...") into structured data.
-    """
-    if "High:" not in vibe_text or "Low:" not in vibe_text:
-        return pd.Series({"name": vibe_text, "high_desc": "", "low_desc": ""})
-
-    parts = vibe_text.split("High:")
-    name = parts[0].strip(": ")
-    high_low_parts = parts[1].split("Low:")
-    high_desc = high_low_parts[0].strip()
-    low_desc = high_low_parts[1].strip()
-    return pd.Series({"name": name, "high_desc": high_desc, "low_desc": low_desc})
-
 
 def train_and_evaluate_model(
     X: np.ndarray,
@@ -217,7 +109,7 @@ def train_and_evaluate_model(
     return model, coef_df, accuracy, acc_std
 
 
-def get_feature_df(vibe_df, split="train"):
+def get_feature_df(vibe_df: pd.DataFrame):
     """
     Given a vibe_df with "score" columns pivoted by "vibe", construct X, y
     arrays for preference and identity classification.
@@ -247,18 +139,102 @@ def get_feature_df(vibe_df, split="train"):
 
     return feature_df, X_pref, y_pref, y_identity
 
+def parse_bullets(text: str):
+    """
+    Parse bullet points from text.
+    """
+    lines = text.split("\n")
+    bullets = []
+    for line in lines:
+        if line.strip().startswith("-") or line.strip().startswith("*"):
+            bullets.append(line.strip().lstrip("- *").strip())
+    return bullets
+
+
+def proposer_postprocess(text: str):
+    """
+    Process the output from the proposer.
+    """
+    bullets = parse_bullets(text)
+    bullets = [b.replace("**", "").replace("-", "") for b in bullets]
+    return bullets
+
+
+def parse_axes(text: str):
+    """
+    Parse axes from text.
+    """
+    lines = [line.strip() for line in text.split("\n") if line.strip()]
+    axes = []
+    for line in lines:
+        cleaned = line.strip('1234567890. -"')
+        cleaned = cleaned.replace("**", "")
+        if cleaned:
+            axes.append(cleaned)
+    return axes
+
+
+def get_pref_score(preference: str, models: list):
+    """
+    Get preference score based on model preference.
+    """
+    if preference == models[0]:
+        return 1
+    elif preference == models[1]:
+        return -1
+    else:
+        return 0
+
+
+def ranker_postprocess(output: str) -> int:
+    """
+    Postprocess the ranker's output to extract whether model A is favored (1), B is favored (-1), or tie/NA (0).
+    """
+    try:
+        output = output.replace("Output ", "").replace("output ", "")
+        output = re.sub(r"[#*]", "", output)
+        score_pattern = re.compile(r"Model: (A|B|N/A|unsure|equal)", re.I | re.M)
+        score = score_pattern.findall(output)
+        if not score:
+            return 0
+        if score[0].lower() == "a":
+            return 1
+        elif score[0].lower() == "b":
+            return -1
+        else:
+            return 0
+    except Exception as e:
+        print(f"Error in ranker_postprocess: {output}")
+        return 0
+
+
+def parse_vibe_description(vibe_text: str) -> pd.Series:
+    """
+    Split an axis string (like "Complexity: High: ... Low: ...") into structured data.
+    """
+    if "High:" not in vibe_text or "Low:" not in vibe_text:
+        return pd.Series({"name": vibe_text, "high_desc": "", "low_desc": ""})
+
+    parts = vibe_text.split("High:")
+    name = parts[0].strip(": ")
+    high_low_parts = parts[1].split("Low:")
+    high_desc = high_low_parts[0].strip()
+    low_desc = high_low_parts[1].strip()
+    return pd.Series({"name": name, "high_desc": high_desc, "low_desc": low_desc})
+
+
 def create_side_by_side_plot(
-    df, 
-    y_col, 
-    x_cols, 
-    titles, 
-    main_title, 
+    df,
+    y_col,
+    x_cols,
+    titles,
+    main_title,
     models,
     error_cols=None,
-    colors=("#2ecc71", "#3498db")
+    colors=("#2ecc71", "#3498db"),
 ):
     """Creates a side-by-side horizontal bar plot with two subplots.
-    
+
     Args:
         df: DataFrame containing the data
         y_col: Column name for y-axis labels
@@ -274,30 +250,27 @@ def create_side_by_side_plot(
         cols=2,
         subplot_titles=titles,
         horizontal_spacing=0.1,
-        specs=[[{"type": "bar"}, {"type": "bar"}]]
+        specs=[[{"type": "bar"}, {"type": "bar"}]],
     )
 
     for i, (x_col, color) in enumerate(zip(x_cols, colors), 1):
         error_x = None
         if error_cols:
             error_x = dict(
-                type="data",
-                array=df[error_cols[i-1]],
-                visible=True,
-                color="#2c3e50"
+                type="data", array=df[error_cols[i - 1]], visible=True, color="#2c3e50"
             )
-            
+
         fig.add_trace(
             go.Bar(
                 y=df[y_col],
                 x=df[x_col],
-                name=titles[i-1],
+                name=titles[i - 1],
                 orientation="h",
                 marker_color=color,
-                error_x=error_x
+                error_x=error_x,
             ),
             row=1,
-            col=i
+            col=i,
         )
 
     fig.update_layout(
@@ -306,26 +279,29 @@ def create_side_by_side_plot(
             "xanchor": "center",
             "y": 0.95,
             "x": 0.5,
-            "font": {"size": 20}
+            "font": {"size": 20},
         },
         template="plotly_white",
-        showlegend=True
+        showlegend=True,
     )
 
-    for i, subtitle in enumerate([
-        f"Seperability Score<br>{models[0]}(+) vs {models[1]}(-)",
-        f"Seperability Score<br>Preferred(+) vs Unpreferred(-)"
-    ], 1):
+    for i, subtitle in enumerate(
+        [
+            f"Seperability Score<br>{models[0]}(+) vs {models[1]}(-)",
+            f"Seperability Score<br>Preferred(+) vs Unpreferred(-)",
+        ],
+        1,
+    ):
         fig.update_xaxes(
             title_text=subtitle,
             zeroline=True,
             zerolinewidth=2,
             zerolinecolor="black",
             row=1,
-            col=i
+            col=i,
         )
 
     fig.update_yaxes(title_text="", row=1, col=1, ticksuffix="   ")
     fig.update_yaxes(title_text="", showticklabels=False, row=1, col=2)
-    
+
     return fig

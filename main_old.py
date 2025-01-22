@@ -15,18 +15,38 @@ from plotly.subplots import make_subplots
 
 # Local utility functions
 from utils import (
-    parse_bullets,
     proposer_postprocess,
-    create_reduce_prompt,
     parse_axes,
     get_pref_score,
-    # rank_axes,
     parse_vibe_description,
     train_and_evaluate_model,
     get_feature_df,
     ranker_postprocess,
 )
 
+def create_reduce_prompt(num_reduced_axes: int):
+    return f"""Below is a list of axes with a description of what makes a piece of text low or high on this axis. I would like to summarize this list to at most {num_reduced_axes} representative axes with concise descriptions.
+
+Here is the list of axes:
+{{differences}}
+
+These axes should contain only one concept and should be human interpretable. The axis title should be a single concept (does not contain "and", "or", etc.). The descriptions of what makes a piece of text high or low on the axis should be unambiguous and mutually exclusive.
+
+Some examples of BAD axes include:
+- "Configuration Clarity: High: Clearly defined structure and purpose. Low: Vaguely defined, minimal purpose." - unclear what the axis is about
+- "Language and Communication: High: Varied/precise, complex structure. Low: Straightforward, simple or general language." - describes two separate axes, description is not mutually exclusive. Axis title contains "and", indicating multiple axes.
+- "Content Quality: High: High quality, engaging, informative. Low: Low quality, unengaging, uninformative." - this describes multiple axes and "quality" is not well defined
+
+Some examples of GOOD axes include:
+- "Formality: High: Informal language. Low: Formal language."
+- "Tone: High: Sarcastic tone. Low: Serious tone."
+- "Efficiency (coding): High: Optimized for runtime and memory. Low: Brute force algorithms with high memory usage."
+
+Make sure the high and low descriptions are as concise as possible. Please return the simplified list of <={num_reduced_axes} axes with any similar, unclear, or uncommon axes removed. Remember that there may be <{num_reduced_axes} axes which are unique, so double check that you have not returned any simplified axes which are very similar to each other.
+
+Please maintain the format of the original axes and return a numbered list. Each element should be structured as follows:
+"{{{{axis_name}}}}: High: {{{{high description}}}} Low: {{{{low description}}}}" 
+"""
 
 def rank_axes(vibes, df, models, position_matters=False):
     """
@@ -357,9 +377,7 @@ If there are no substantive differences between the outputs, please respond with
         col=2,
     )
 
-    fig.update_yaxes(
-        title_text="", row=1, col=1, ticksuffix="   " 
-    )
+    fig.update_yaxes(title_text="", row=1, col=1, ticksuffix="   ")
     fig.update_yaxes(title_text="", showticklabels=False, row=1, col=2)
 
     wandb.log({"model_vibe_scores_plot": wandb.Html(fig.to_html())})
