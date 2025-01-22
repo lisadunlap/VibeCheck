@@ -163,6 +163,7 @@ def train_and_evaluate_model(
                 X, y, test_size=0.5, random_state=42 + split
             )
         else:
+            print("Using all data for training and testing")
             X_train = X
             X_test = X
             y_train = y
