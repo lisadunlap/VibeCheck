@@ -9,7 +9,7 @@ Lisa Dunlap, Krishna Mandal, Trevor Darrell, Jacob Steinhardt, Joseph E. Gonzale
 </p>
 
 
-**This is a simplified version of the VibeCheck paper.** Original code is in `_deprecated` and should still work, it's just very messy. Still working on adding all the functionality of the orignal code but the core functionality is here and the visualizations are much better.
+**This is a simplified and more user-friendly version of the VibeCheck paper.** Original code is in `_deprecated` and should run, it's just very messy. Still working on adding all the functionality of the orignal code but the core functionality is here and the visualizations are much better. Namely we moved to using [LOTUS](https://lotus-ai.readthedocs.io/en/latest/), a pandas wrapper to easily run LLM/embedding calls on your data. It reduced my many thousand lines of code to like 2 files. I'm telling you it's the shit.
 
 ## Data
 
@@ -31,7 +31,7 @@ Lisa Dunlap, Krishna Mandal, Trevor Darrell, Jacob Steinhardt, Joseph E. Gonzale
 pip install -r requirements.txt
 ```
 
-2. Create a weights and biases account if you dont already have one
+2. Create a [weights and biases account](https://wandb.ai/site) if you dont already have one
 
 3. Set env variables for your LLM API keys (e.g. OPENAI_API_KEY, ANTHROPIC_API_KEY, etc)
 
@@ -43,7 +43,7 @@ python main.py --data_path data/friendly_and_cold_sample.csv --models cold frien
 ```
 This runs a toy example on LLM outputs, one model is prompted to be friendly, the other cold and factual. I randomly assigned preference so friendly results are favored 80% of the time
 
-*Note:* This is a slightly different definition of vibe than the paper (e.g. "friendly tone" instead of "Tone: High: friendly Low: cold"), but I think it's more intuitive. If you want to use the paper definition, you can run `python main_old.py --data_path data/friendly_and_cold_sample.csv --models cold friendly --num_final_vibes 3`
+**Note:** We use a slightly different definition of vibe than the paper (e.g. "friendly tone" instead of "Tone: High: friendly Low: cold"). I think this definition is more intuitive, but if you want to use the paper definition, you can run `main_old.py` with the same arguments.
 
 *Gradio Visualization:* Add the `--gradio` flag to see a gradio visualization of the data. This is useful for debugging the ranker outputs by looking at the pairwise comparisons.
 
