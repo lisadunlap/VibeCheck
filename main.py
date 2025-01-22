@@ -2,7 +2,8 @@ import argparse
 import wandb
 import pandas as pd
 from plotly import graph_objects as go
-
+import numpy as np
+import os
 import lotus
 from lotus.models import LM, SentenceTransformersRM
 from lotus.cache import CacheConfig, CacheType, CacheFactory
@@ -18,7 +19,7 @@ from utils import (
 )
 
 
-def rank_axes(vibes, df, models, position_matters=False):
+def rank_axes(vibes, df, models, single_position_rank=False):
     """
     Ranks the two model outputs across the given vibes (axes) using LOTUS ranking prompts.
     """
@@ -73,7 +74,7 @@ Remember to be as objective as possible and strictly adhere to the response form
         lambda row: f"\nProperty: {row['vibe']}\n\nUser prompt:\n{row['question']}\n\nResponse A:\n{row[models[0]]}\n\nResponse B:\n{row[models[1]]}\n\nProperty (restated): {row['vibe']}",
         axis=1,
     )
-    if position_matters:
+    if not single_position_rank:
         vibe_df["ranker_inputs_reversed"] = vibe_df.apply(
             lambda row: f"Property: {row['vibe']}\nUser prompt:\n{row['question']}\n\nResponse A:\n{row[models[1]]}\n\nResponse B:\n{row[models[0]]}\n\nProperty (restated): {row['vibe']}",
             axis=1,
@@ -99,7 +100,7 @@ Remember to be as objective as possible and strictly adhere to the response form
         how="left",
     )
     vibe_df["ranker_output_1"] = vibe_df["ranker_output_1"].apply(ranker_postprocess)
-    if position_matters:
+    if not single_position_rank:
         ranker_2 = vibe_df.sem_map(
             ranker_prompt2, return_raw_outputs=True, suffix="ranker_output_2"
         )
@@ -138,7 +139,7 @@ Your final list of simplified properties should be human interpretable. The fina
 * if two properties are "uses markdown" and "utilizes extensive formatting", text which contains one likely contains the other and should be combined into a single property "uses extensive markdown formatting".
 * "focus on historical context" is not a good property because it is too vague. A better property would be "mentions specific historical events".
 
-Each property should be <= 10 words. Your response should be a list deliniated with "-"
+Each property should be <= 10 words. Order your final list of properties by how much they are seen in the data. Your response should be a list deliniated with "-"
 """
 
 
@@ -191,14 +192,10 @@ If there are no substantive differences between the outputs, please respond with
     results = results.explode("differences").reset_index(drop=True)
 
     # Cluster and reduce axes
+    # TODO: fix groupby_clusterid for sem_agg
     results = results.sem_index("differences", "differences_index").sem_cluster_by(
         "differences", 1
     )
-    # summaries = results.sem_agg(
-    #     create_reduce_prompt(num_final_vibes),
-    #     group_by="cluster_id",
-    #     suffix="reduced axes",
-    # )
     summaries = results.sem_agg(
         create_reduce_prompt(num_final_vibes),
         suffix="reduced axes",
@@ -209,23 +206,139 @@ If there are no substantive differences between the outputs, please respond with
     return vibes
 
 
+def get_examples_for_vibe(vibe_df, vibe, models, num_examples=5):
+    """Get example pairs where the given vibe was strongly present."""
+    vibe_examples = vibe_df[(vibe_df['vibe'] == vibe) & (vibe_df['score'].abs() > 0.0)]
+    examples = []
+    for _, row in vibe_examples.head(num_examples).iterrows():
+        examples.append({
+            'prompt': row['question'],
+            'output_a': row[models[0]],
+            'output_b': row[models[1]],
+            'score': row['score'],
+            'core_output': row['raw_outputranker_output_1']
+        })
+    return examples
+
+def create_gradio_app(vibe_df, models, coef_df, corr_plot):
+    import gradio as gr
+
+    # Create the plots
+    agg_df = vibe_df.groupby("vibe").agg({"pref_score": "mean", "score": "mean"}).reset_index()
+    
+    # Create plots and convert them to HTML strings
+    heuristics_plot = create_side_by_side_plot(
+        df=agg_df,
+        y_col="vibe",
+        x_cols=["score", "pref_score"],
+        titles=("Model Identity", "Preference Prediction"),
+        main_title="Vibe Heuristics",
+        models=models
+    )
+    
+    coef_plot = create_side_by_side_plot(
+        df=coef_df,
+        y_col="vibe",
+        x_cols=["coef_modelID", "coef_preference"],
+        titles=("Model Identity", "Preference Prediction"),
+        main_title="Vibe Model Coefficients",
+        models=models,
+        error_cols=["coef_std_modelID", "coef_std_preference"]
+    )
+    
+    def show_examples(vibe):
+        examples = get_examples_for_vibe(vibe_df, vibe, models)
+        markdown = ""
+        for i, ex in enumerate(examples, 1):
+            markdown += f"### Example {i} ({models[0] if ex['score'] > 0 else models[1]} vibe)\n"
+            markdown += f"**Prompt:**\n{ex['prompt']}\n\n"
+            markdown += f"**{models[0]}:**\n{ex['output_a']}\n\n"
+            markdown += f"**{models[1]}:**\n{ex['output_b']}\n\n"
+            markdown += f"**Ranker Output:**\n{ex['core_output']}\n\n"
+            markdown += "---\n\n"
+        return markdown
+    
+    with gr.Blocks() as app:
+        gr.Markdown("# <center>It's all about the ✨vibes✨</center>")
+        
+        with gr.Accordion("Plots", open=True):
+            with gr.Row():
+                gr.Plot(heuristics_plot)
+
+            with gr.Row():
+                gr.Plot(coef_plot)
+
+            with gr.Row():
+                gr.Plot(corr_plot)
+        
+        gr.Markdown("## Vibe Examples")
+        vibe_dropdown = gr.Dropdown(
+            choices=vibe_df['vibe'].unique().tolist(),
+            label="Select a vibe to see examples"
+        )
+        examples_output = gr.Markdown()
+        vibe_dropdown.change(
+            fn=show_examples,
+            inputs=[vibe_dropdown],
+            outputs=[examples_output]
+        )
+    
+    return app
+
+def create_vibe_correlation_plot(vibe_df, models):
+    """Creates a correlation matrix plot for vibe scores."""
+    # Pivot the dataframe to get vibe scores in columns
+    vibe_pivot = vibe_df.pivot_table(
+        index=['question', models[0], models[1]], 
+        columns='vibe', 
+        values='score'
+    ).reset_index()
+    
+    # Calculate correlation matrix for just the vibe scores
+    vibe_cols = vibe_pivot.columns[3:]  # Skip the index columns
+    corr_matrix = vibe_pivot[vibe_cols].corr()
+    
+    # Create heatmap
+    fig = go.Figure(data=go.Heatmap(
+        z=corr_matrix,
+        x=corr_matrix.columns,
+        y=corr_matrix.columns,
+        colorscale='RdBu',
+        zmid=0,
+        text=np.round(corr_matrix, 2),
+        texttemplate='%{text}',
+        textfont={"size": 10},
+        hoverongaps=False,
+    ))
+    
+    fig.update_layout(
+        title="Vibe Score Correlations",
+        xaxis_tickangle=-45,
+        width=800,
+        height=800,
+    )
+    
+    return fig
+
 def main(
     data_path,
     models,
     num_proposal_samples=30,
     num_final_vibes=10,
     test=False,
-    position_matters=False,
+    single_position_rank=False,
     project_name="vibecheck",
     proposer_only=False,
+    gradio=False,
 ):
     # Initialize wandb
     wandb.init(
-        project=project_name, name=f"[new]{models[0]}_vs_{models[1]}", save_code=True
+        project=project_name, name=f"{models[0]}_vs_{models[1]}", save_code=True
     )
 
+    output_dir = f"outputs/{data_path.split('/')[-1].replace('.csv', '')}_{models[0]}_vs_{models[1]}"
+    os.makedirs(output_dir, exist_ok=True)
     # Initialize LOTUS
-    # TODO: create PR in LOTUS repo to fix cahcing problems
     cache_config = CacheConfig(cache_type=CacheType.SQLITE, max_size=1000)
     cache = CacheFactory.create_cache(cache_config)
     lm = LM(model="gpt-4o", cache=cache)
@@ -254,7 +367,7 @@ def main(
         template="plotly_white",
     )
     wandb.log({"preference_distribution": wandb.Html(fig.to_html())})
-
+    fig.write_html(os.path.join(output_dir, "preference_distribution.html"))
     vibes = propose_vibes(
         df,
         models,
@@ -265,7 +378,7 @@ def main(
     # Log vibes to wandb
     vibes_df = pd.DataFrame({"vibes": vibes})
     wandb.log({"vibes": wandb.Table(dataframe=vibes_df)})
-    vibes_df.to_csv("vibes.csv", index=False)
+    vibes_df.to_csv(os.path.join(output_dir, "vibes.csv"), index=False)
 
     if proposer_only:
         return
@@ -274,19 +387,18 @@ def main(
     lm = LM(model="gpt-4o-mini", cache=cache)
     lotus.settings.configure(lm=lm, enable_cache=True)
     if test:
-        vibe_df = rank_axes(vibes[:3], df, models, position_matters=position_matters)
+        vibe_df = rank_axes(vibes[:3], df, models, single_position_rank=single_position_rank)
     else:
-        vibe_df = rank_axes(vibes, df, models, position_matters=position_matters)
-
-    wandb.log({"ranker_results": wandb.Table(dataframe=vibe_df)})
-    vibe_df.to_csv("vibe_df.csv", index=False)
-    print(vibe_df.columns)
+        vibe_df = rank_axes(vibes, df, models, single_position_rank=single_position_rank)
 
     # Compute preference alignment
     vibe_df["preference_feature"] = vibe_df["preference"].apply(
         lambda x: get_pref_score(x, models)
     )
     vibe_df["pref_score"] = vibe_df["score"] * vibe_df["preference_feature"]
+
+    wandb.log({"ranker_results": wandb.Table(dataframe=vibe_df)})
+    vibe_df.to_csv(os.path.join(output_dir, "vibe_df.csv"), index=False)
 
     agg_df = (
         vibe_df.groupby("vibe")
@@ -312,7 +424,7 @@ def main(
         models=models
     )
     wandb.log({"model_vibe_scores_plot": wandb.Html(fig.to_html())})
-
+    fig.write_html(os.path.join(output_dir, "model_vibe_scores_plot.html"))
     # Filter out vibes with low separation or preference
     vibe_df = vibe_df[vibe_df["score"].abs() > 0.05]
     vibe_df = vibe_df[vibe_df["pref_score"].abs() > 0.05]
@@ -321,7 +433,12 @@ def main(
     )
     print("Remaining vibes:\n" + "\n".join(vibe_df["vibe"].unique()))
 
-    #  Train Preference Prediction and Model Identity Classification Models
+    # After creating vibe_df and before training models, add:
+    corr_plot = create_vibe_correlation_plot(vibe_df, models)
+    wandb.log({"vibe_correlations": wandb.Html(corr_plot.to_html())})
+    corr_plot.write_html("vibe_correlations.html")
+
+    # Train Preference Prediction and Model Identity Classification Models
     feature_df, X_pref, y_pref, y_identity = get_feature_df(vibe_df)
     (
         preference_model,
@@ -362,16 +479,19 @@ def main(
         error_cols=["coef_std_modelID", "coef_std_preference"]
     )
     wandb.log({"model_vibe_coef_plot": wandb.Html(fig.to_html())})
-
-    # Save results
-    fig.write_html("vibecheck_results.html")
-    coef_df.to_csv("vibecheck_coefficients.csv", index=False)
+    fig.write_html(os.path.join(output_dir, "model_vibe_coef_plot.html"))
+    coef_df.to_csv(os.path.join(output_dir, "vibecheck_coefficients.csv"), index=False)
 
     # Log final data
     wandb.log({"coefficient_data": wandb.Table(dataframe=coef_df)})
 
     # Close wandb run
     wandb.finish()
+
+    if gradio:
+        print("\nLaunching Gradio app...")
+        app = create_gradio_app(vibe_df, models, coef_df, corr_plot)
+        app.launch(share=True)
 
 
 if __name__ == "__main__":
@@ -401,9 +521,9 @@ if __name__ == "__main__":
     )
     parser.add_argument("--test", action="store_true", help="Run in test mode")
     parser.add_argument(
-        "--position_matters",
+        "--single_position_rank",
         action="store_true",
-        help="Rerun ranker with different positions",
+        help="Don't rerun ranker with different positions, faster but may lead to position bias",
     )
     parser.add_argument(
         "--num_final_vibes",
@@ -420,6 +540,9 @@ if __name__ == "__main__":
     parser.add_argument(
         "--proposer_only", action="store_true", help="Only run the proposer"
     )
+    parser.add_argument(
+        "--gradio", action="store_true", help="Run the Gradio app"
+    )
 
     args = parser.parse_args()
     main(
@@ -428,7 +551,8 @@ if __name__ == "__main__":
         args.num_proposal_samples,
         args.num_final_vibes,
         args.test,
-        args.position_matters,
+        args.single_position_rank,
         args.project,
         args.proposer_only,
+        args.gradio,
     )

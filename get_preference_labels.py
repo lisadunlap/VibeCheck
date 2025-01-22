@@ -64,17 +64,18 @@ import argparse
 
 def __main__():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--data_path", type=str, default="data/cnndm.csv")
+    parser.add_argument("--data_path", type=str, default="data/helm/claude_gemini_gpt_math_cot_bigger.csv")
     parser.add_argument(
-        "--models", type=list, default=["command_xlarge_beta", "TNLGv2"]
+        "--models", nargs="+", default=["anthropic/claude-3-5-sonnet-20240620", "openai/gpt-4o-2024-08-06"]
     )
-    parser.add_argument("--output_path", type=str, default="data/cnndm_with_pref.csv")
+    parser.add_argument("--output_path", type=str, default="data/helm/claude_gemini_gpt_math_cot_bigger_w_pref.csv")
+    parser.add_argument("--judge_model", type=str, default="gpt-4o", help="model to use for judging preference")
     parser.add_argument("--test", action="store_true")
     args = parser.parse_args()
 
     cache_config = CacheConfig(cache_type=CacheType.SQLITE, max_size=1000)
     cache = CacheFactory.create_cache(cache_config)
-    lm = LM(model="gpt-4o", cache=cache)
+    lm = LM(model=args.judge_model, cache=cache)
     lotus.settings.configure(lm=lm, enable_cache=True)
 
     df = pd.read_csv(args.data_path)
@@ -103,8 +104,10 @@ def __main__():
     df["preference"] = df["preference_feature"].apply(
         lambda x: {"-1": args.models[1], "1": args.models[0], "0": "equal"}[str(x)]
     )
+    df["preference_model"] = args.judge_model
     print("Preference counts: ", df.preference.value_counts().to_dict())
     df.to_csv(args.output_path, index=False)
+    print(f"Saved to {args.output_path}")
 
 
 if __name__ == "__main__":
