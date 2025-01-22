@@ -2,7 +2,7 @@
 
 
 ### [VibeCheck: Discover and Quantify Qualitative Differences in Large Language Models](https://arxiv.org/abs/2410.12851)
-Lisa Dunlap, Krishna Mandal, Trevor Darrell, Jacob Steinhardt, Joseph E. Gonzalez
+The title sucks I know, but the paper's alright.
 
 <p align="center">
   <img src="method_vibecheck.png" width="800">
