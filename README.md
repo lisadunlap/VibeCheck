@@ -1,17 +1,15 @@
-# Give your generative models a vibe check :D
-### VibeCheck: Discover and Quantify Qualitative Differences in Large Language Models
-Lisa Dunlap, Krishna Mandal, Trevor Darrell, Jacob Steinhardt, Joseph E. Gonzalez
+# Give your generative models a ✨vibe check✨
 
-Paper link [here](https://arxiv.org/abs/2410.12851), joke version of paper coming soon 
+
+### [VibeCheck: Discover and Quantify Qualitative Differences in Large Language Models](https://arxiv.org/abs/2410.12851)
+The title sucks I know, but the paper's alright.
 
 <p align="center">
   <img src="method_vibecheck.png" width="800">
 </p>
 
 
-**Still cleaning this up:** I got distracted trying to implement some causal inference stuff...
-
-**I would follow demo.ipynb, which uses LOTUS to perform LLM operations over your dataframe. I think I can reduce this whole repo into like 3 files with some refactoring to include this.**
+**This is a simplified and more user-friendly version of the VibeCheck paper.** Original code is in `_deprecated` and should run, it's just very messy. Still working on adding all the functionality of the orignal code but the core functionality is here and the visualizations are much better. Namely we moved to using [LOTUS](https://lotus-ai.readthedocs.io/en/latest/), a pandas wrapper to easily run LLM/embedding calls on your data. It reduced my many thousand lines of code to like 2 files. I'm telling you it's the shit.
 
 ## Data
 
@@ -33,41 +31,27 @@ Paper link [here](https://arxiv.org/abs/2410.12851), joke version of paper comin
 pip install -r requirements.txt
 ```
 
-2. Create a weights and biases account if you dont already have one
+2. Create a [weights and biases account](https://wandb.ai/site) if you dont already have one
 
-3. Copy this into a file named serve/global_vars.py and set your openai key 
+3. Set env variables for your LLM API keys (e.g. OPENAI_API_KEY, ANTHROPIC_API_KEY, etc)
 
+To run local models, you can use the [LiteLLM library](https://docs.litellm.ai/docs/) with notes on how to set up with LOTUS [here](https://lotus-ai.readthedocs.io/en/latest/llm.html)
+
+4. Example run
 ```
-# LLM API (if you want to use a local LLM, use vLLM)
-LLAMA_URL = "http://localhost:8001/v1" 
-VICUNA_URL = "http://localhost:8001" 
-LLM_CACHE_FILE = "cache/cache_llm"
-LLM_EMBED_CACHE_FILE = "cache/cache_llm_embed"
-
-OPENAI_API_KEY = [put your key here]
-ANTHROPIC_API_KEY = [put your key here]
-```
-
-4. Run a config
-```
-python main.py --config configs/base.yaml wandb=True
+python main.py --data_path data/friendly_and_cold_sample.csv --models cold friendly --num_final_vibes 3
 ```
 This runs a toy example on LLM outputs, one model is prompted to be friendly, the other cold and factual. I randomly assigned preference so friendly results are favored 80% of the time
 
+**Note:** We use a slightly different definition of vibe than the paper (e.g. "friendly tone" instead of "Tone: High: friendly Low: cold"). I think this definition is more intuitive, but if you want to use the paper definition, you can run `main_old.py` with the same arguments.
+
+*Gradio Visualization:* Add the `--gradio` flag to see a gradio visualization of the data. This is useful for debugging the ranker outputs by looking at the pairwise comparisons.
+
 ## Data Structure
 
-All data needs to contain the columns "question", model_name_1, model_name_2, and optionally "preference". If the preference column is not provided, running main will compute the preference via LLM as a jude (warning the LLMs are hardcoded in the file)
+All data needs to contain the columns "question", model_name_1, model_name_2, and optionally "preference". If the preference column is not provided, run `generate_preference_labels.py` to compute the preference via LLM as a judge.
 
-Say your two models are gpt-4o and gemini-1.5-flash. Your CSV should have the columns "question", "gpt-4o", "gemini-1.5-flash" and in your config, set your data path and set `models: [gpt-4o, gemini-1.5-flash]`. Sometime soon I will add an option to only optimize for model matching if you only care to find differentiating qualities, so get excited for that. 
-
-## Code Structure (more explanation coming soon)
-
-This code structure is loosely modeled off the [VisDiff repo](https://github.com/Understanding-Visual-Datasets/VisDiff)
-
-Here are the core components:
-* [Proposer](components/proposer.py): takes in prompt, output_a, output_b triplets and return a list of axes
-* [Reducer](components/reducer.py): takes a long list of axes and returns a shorter list of representative axes
-* [Ranker](components/ranker.py): takes in a triplet and an axis and produces a score
+Say your two models are gpt-4o and gemini-1.5-flash. Your CSV should have the columns "question", "gpt-4o", "gemini-1.5-flash" and in your command, set your data path and set `--models gpt-4o gemini-1.5-flash`. Sometime soon I will add an option to only optimize for model matching if you only care to find differentiating qualities, so get excited for that. 
 
 ## 🎯 Citation
 
@@ -83,3 +67,12 @@ If you use this repo in your research, please cite it as follows and ideally use
   url={https://arxiv.org/abs/2410.12851},
 }
 ```
+
+## TODO
+
+- [ ] Add a way to only optimize for model matching if you only care to find differentiating qualities
+- [ ] Add different vibe selection methods (LARS, filter by coeffs, etc)
+- [ ] Add multi-model comparison
+- [ ] Add absolute ranking option
+- [ ] Add causal inference stuff to try to match model vibes and check preference
+- [ ] Multimodal support
