@@ -219,6 +219,42 @@ Remember that these properties should be human interpretable, concise (<= 15 wor
     print("Vibes:\n" + "\n".join(vibes))
     return vibes
 
+def get_vibe_question_types(vibe_df: pd.DataFrame, batch_size: int = 50):
+    """Describe what types of questions result in high scores for a given vibe."""
+    # Create a copy of the filtered dataframe to avoid warnings
+    filtered_vibe_df = vibe_df[vibe_df["score"].abs() > 0.0].copy()
+    vibin_questions = filtered_vibe_df.sort_values(["vibe", "score"], ascending=[True, False])
+
+    prompt = """You are a machine learning researcher trying to discover what types of questions result in a model exhibiting a certain behavior. Given the following behavior and a list of questions along with a score of how much the model exhibits the behavior on that question, describe what types of questions result in the model exhibiting the behavior. Each score is between 1 and 5, where 1 is does not exhibit the behavior at all, and 5 is exhibits the behavior completely.
+
+{input_text}
+
+Please respond with a 1 sentence description of what types of questions result in the model exhibiting the behavior and what types of questions result in the model not exhibiting the behavior. This should be a single sentence that is human interpretable and concise, such that I can create a diverse set of new questions that result in the model exhibiting the behavior as well as new questions that result in the model not exhibiting the behavior.
+
+Format your response in the following format:
+Question types which exhibit the behavior: <description>
+Question types which do not exhibit the behavior: <description>
+"""
+    new_df = []
+    for vibe in vibin_questions["vibe"].unique():
+        single_vibe_df = vibin_questions[vibin_questions["vibe"] == vibe].copy()
+        # Sample and create input text for each vibe
+        sampled_df = single_vibe_df.sample(min(batch_size, len(single_vibe_df)))
+        input_texts = sampled_df.apply(
+            lambda row: f"Behavior: {row['vibe']}\nQuestion: {row['question']}\nScore: {row['score']}",
+            axis=1
+        ).tolist()
+        input_text = "\n-------------\n".join(input_texts)
+        new_df.append({
+            "vibe": vibe,
+            "input_text": input_text
+        })
+    
+    new_df = pd.DataFrame(new_df)
+    vibe_question_types = new_df.sem_map(
+        prompt, return_raw_outputs=True, suffix="vibe_question_types"
+    )
+    return vibe_question_types
 
 def get_examples_for_vibe(vibe_df: pd.DataFrame, vibe: str, model: str, num_examples: int = 5):
     """Get example pairs where the given vibe was strongly present."""
@@ -272,13 +308,15 @@ def create_vibe_correlation_plot(vibe_df: pd.DataFrame, model: str):
     return fig
 
 
-def create_gradio_interface(vibe_df: pd.DataFrame, model: str, output_dir: str, model_vibe_scores_plot: go.Figure, score_dist_plot: go.Figure):
+def create_gradio_interface(vibe_df: pd.DataFrame, model: str, output_dir: str, model_vibe_scores_plot: go.Figure, score_dist_plot: go.Figure, vibe_question_types: pd.DataFrame):
     """Creates a Gradio interface for visualizing VibeCheck results."""
     import gradio as gr
         
     def show_examples(selected_vibe):
         examples = get_examples_for_vibe(vibe_df, selected_vibe, model, num_examples=5)
-        markdown = ""
+        markdown = f"### What sort of prompts elicit the vibe?\n"
+        markdown += f"{vibe_question_types[vibe_question_types['vibe'] == selected_vibe]['vibe_question_types'].values[0]}\n\n"
+        markdown += "---\n\n"
         for i, ex in enumerate(examples, 1):
             markdown += f"### Example {i} ({selected_vibe})\n"
             markdown += f"**Prompt:** {ex['prompt']}\n\n"
@@ -298,8 +336,9 @@ def create_gradio_interface(vibe_df: pd.DataFrame, model: str, output_dir: str, 
                 gr.Plot(score_dist_plot)
         
         gr.Markdown("## Example Responses")
+        vibe_df_w_types = vibe_df.merge(vibe_question_types, on="vibe", how="left")
         vibe_dropdown = gr.Dropdown(
-            choices=sorted(vibe_df["vibe"].unique()),
+            choices=sorted(vibe_df_w_types["vibe"].unique()),
             label="Select a vibe to see examples",
         )
         examples_md = gr.Markdown()
@@ -403,6 +442,8 @@ def main(
 
     # Compute preference alignment
     vibe_df["pref_score"] = vibe_df["score"] * vibe_df["preference"].apply(lambda x: 1 if x == model else 0)
+    vibe_question_types = get_vibe_question_types(vibe_df)
+    wandb.log({"Vibe Scoring/vibe_question_types": wandb.Table(dataframe=vibe_question_types)})
 
     wandb.log({"Vibe Scoring/ranker_results": wandb.Table(dataframe=vibe_df)})
     wandb.log({"Vibe Scoring/score_dist_plot": wandb.Html(score_dist_plot.to_html())})
@@ -451,7 +492,7 @@ def main(
     
     # Launch Gradio interface if requested
     if gradio:
-        app = create_gradio_interface(vibe_df, model, output_dir, model_vibe_scores_plot, score_dist_plot)
+        app = create_gradio_interface(vibe_df, model, output_dir, model_vibe_scores_plot, score_dist_plot, vibe_question_types)
         app.launch(share=True)
 
 
