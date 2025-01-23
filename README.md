@@ -9,7 +9,7 @@ The title sucks I know, but the paper's alright.
 </p>
 
 
-**This is a simplified and more user-friendly version of the VibeCheck paper.** Original code is in `_deprecated` and should run, it's just very messy. Still working on adding all the functionality of the orignal code but the core functionality is here and the visualizations are much better. Namely we moved to using [LOTUS](https://lotus-ai.readthedocs.io/en/latest/), a pandas wrapper to easily run LLM/embedding calls on your data. It reduced my many thousand lines of code to like 2 files. I'm telling you it's the shit.
+**This is a simplified and more user-friendly version of the VibeCheck paper.** Original code is in `_deprecated` and should run, it's just very messy. Still working on adding all the functionality of the orignal code but the core functionality is here and the visualizations are much better. Namely we moved to using [LOTUS](https://lotus-ai.readthedocs.io/en/latest/), a pandas wrapper to easily run LLM/embedding calls on your data. It reduced my many thousand lines of code to like 2 files. I'm telling you it's the bees knees.
 
 ## Data
 
@@ -39,7 +39,7 @@ To run local models, you can use the [LiteLLM library](https://docs.litellm.ai/d
 
 4. Example run
 ```
-python main.py --data_path data/friendly_and_cold_sample.csv --models cold friendly --num_final_vibes 3
+python main.py --data_path data/friendly_and_cold_sample.csv --models friendly cold --num_final_vibes 3
 ```
 This runs a toy example on LLM outputs, one model is prompted to be friendly, the other cold and factual. I randomly assigned preference so friendly results are favored 80% of the time
 
@@ -60,10 +60,8 @@ If you use this repo in your research, please cite it as follows and ideally use
 @article{dunlap_vibecheck,
   title={VibeCheck: Discover and Quantify Qualitative Differences in Large Language Models},
   author={Lisa Dunlap and Krishna Mandal and Trevor Darrell and Jacob Steinhardt and Joseph E Gonzalez},
-  journal={arXiv preprint arXiv:2312.02974},
-  year={2024},
-  archivePrefix={arXiv},
-  primaryClass={cs.LG},
+  journal={International Conference on Learning Representations},
+  year={2025},
   url={https://arxiv.org/abs/2410.12851},
 }
 ```
