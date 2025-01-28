@@ -253,6 +253,31 @@ def create_side_by_side_plot(
         specs=[[{"type": "bar"}, {"type": "bar"}]],
     )
 
+    # Wrap long labels
+    def wrap_text(text, width=100):
+        if len(text) <= width:
+            return text
+        words = text.split()
+        lines = []
+        current_line = []
+        current_length = 0
+        
+        for word in words:
+            if current_length + len(word) + 1 <= width:
+                current_line.append(word)
+                current_length += len(word) + 1
+            else:
+                lines.append(" ".join(current_line))
+                current_line = [word]
+                current_length = len(word)
+        
+        if current_line:
+            lines.append(" ".join(current_line))
+        return "<br>".join(lines)
+
+    # Apply wrapping to y-axis labels
+    wrapped_labels = [wrap_text(str(label)) for label in df[y_col]]
+    
     for i, (x_col, color) in enumerate(zip(x_cols, colors), 1):
         error_x = None
         if error_cols:
@@ -262,7 +287,7 @@ def create_side_by_side_plot(
 
         fig.add_trace(
             go.Bar(
-                y=df[y_col],
+                y=wrapped_labels,  # Use wrapped labels instead of df[y_col]
                 x=df[x_col],
                 name=titles[i - 1],
                 orientation="h",
