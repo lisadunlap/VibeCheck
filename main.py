@@ -38,6 +38,8 @@ Instructions:
 
 A group of humans should agree with your decision. Use the following format for your response:
 Explanation: {{your explanation}}
+Text from outputs which aligns with the property: "{{text from outputs which aligns with the property}}"
+Text from outputs which does not align with the property: "{{text from outputs which does not align with the property}}"
 Model: {{A, B, equal, N/A, or unsure}}
 
 Remember to be as objective as possible and strictly adhere to the response format."""
@@ -491,7 +493,7 @@ def main(
     )
 
     # First plot (vibe heuristics)
-    fig = create_side_by_side_plot(
+    model_vibe_scores_plot = create_side_by_side_plot(
         df=agg_df,
         y_col="vibe",
         x_cols=["score", "pref_score"],
@@ -499,8 +501,8 @@ def main(
         main_title="Vibe Heuristics",
         models=models,
     )
-    wandb.log({"Vibe Plots/model_vibe_scores_plot": wandb.Html(fig.to_html())})
-    fig.write_html(os.path.join(output_dir, "model_vibe_scores_plot.html"))
+    wandb.log({"Vibe Plots/model_vibe_scores_plot": wandb.Html(model_vibe_scores_plot.to_html())})
+    model_vibe_scores_plot.write_html(os.path.join(output_dir, "model_vibe_scores_plot.html"))
     # Filter out vibes with low separation or preference
     vibe_df = vibe_df[vibe_df["score"].abs() > 0.05]
     vibe_df = vibe_df[vibe_df["pref_score"].abs() > 0.05]
@@ -548,7 +550,7 @@ def main(
     ).sort_values("coef_preference", ascending=False)
 
     # Second plot (coefficients)
-    fig = create_side_by_side_plot(
+    coef_plot = create_side_by_side_plot(
         df=coef_df,
         y_col="vibe",
         x_cols=["coef_modelID", "coef_preference"],
@@ -557,8 +559,8 @@ def main(
         models=models,
         error_cols=["coef_std_modelID", "coef_std_preference"],
     )
-    wandb.log({"Vibe Plots/model_vibe_coef_plot": wandb.Html(fig.to_html())})
-    fig.write_html(os.path.join(output_dir, "model_vibe_coef_plot.html"))
+    wandb.log({"Vibe Plots/model_vibe_coef_plot": wandb.Html(coef_plot.to_html())})
+    coef_plot.write_html(os.path.join(output_dir, "model_vibe_coef_plot.html"))
     coef_df.to_csv(os.path.join(output_dir, "vibecheck_coefficients.csv"), index=False)
 
     # Log final data
@@ -579,6 +581,15 @@ def main(
         print("\nLaunching Gradio app...")
         app = create_gradio_app(vibe_df, models, coef_df, corr_plot, vibe_question_types)
         app.launch(share=True)
+
+    return {"output_dir": output_dir,
+            "model_vibe_scores_plot": model_vibe_scores_plot,
+            "score_dist_plot": coef_plot,
+            "vibe_question_types": vibe_question_types,
+            "vibe_df": vibe_df,
+            "agg_df": agg_df,
+            "corr_plot": corr_plot,
+            }
 
 
 if __name__ == "__main__":
