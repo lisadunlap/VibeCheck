@@ -19,26 +19,43 @@ from utils import (
     create_side_by_side_plot,
 )
 
-def ranker_postprocess(output: str) -> float:
+def ranker_postprocess(output: str) -> tuple[float, str, str]:
     """
-    Extracts the numerical score from the ranker's output.
+    Extracts the numerical score, explanation, and text references from the ranker's output.
     
     Args:
         output (str): Raw output from the ranking model containing explanation and score
         
     Returns:
-        float: Extracted score (1-5) or 0.0 if N/A or invalid
+        tuple[float, str, str]: Tuple containing:
+            - float: Extracted score (1-5) or 0.0 if N/A or invalid
+            - str: Explanation text
+            - str: Referenced text that aligns with the property
     """
     try:
-        # Look for "Score:" followed by a number or N/A
+        explanation = ""
+        text_refs = ""
+        score = 0.0
+        
+        # Extract explanation
+        if "Explanation:" in output:
+            explanation_parts = output.split("Explanation:")[-1].split("Text from outputs")[0].strip()
+            explanation = explanation_parts
+            
+        # Extract text references
+        if "Text from outputs which aligns with the property:" in output:
+            text_parts = output.split("Text from outputs which aligns with the property:")[-1].split("Score:")[0].strip()
+            text_refs = text_parts
+            
+        # Extract score
         if "Score:" not in output:
-            return 0.0
+            return 0.0, explanation, text_refs
             
         score_text = output.split("Score:")[-1].strip()
         
         # Handle N/A case
         if "N/A" in score_text:
-            return 0.0
+            return 0.0, explanation, text_refs
             
         # Extract first number found in the score text
         score = float(next(num for num in score_text.split() if num.isdigit()))
@@ -46,13 +63,13 @@ def ranker_postprocess(output: str) -> float:
         # Validate score range
         if score < 1 or score > 5:
             print(f"Invalid score: {score} in {output}")
-            return 0.0
+            return 0.0, explanation, text_refs
             
-        return score
+        return score, explanation, text_refs
         
     except (ValueError, StopIteration):
         print(f"Error in ranker_postprocess: {output}")
-        return 0.0
+        return 0.0, "", ""
 
 def rank_axes(vibes: List[str], df: pd.DataFrame, model: str):
     """
@@ -66,6 +83,7 @@ For example, if the property is "casual tone", a score of 1 would mean the model
 
 A group of humans should agree with your decision. Provide an explanation of your score and reference parts of the model's output that align or do not align with the property to justify your score. 
 Explanation: {{your explanation}}
+Text from outputs which aligns with the property: "{{text from outputs which aligns with the property, with each quote seperated by newlines and a -}}"
 Score: {{1, 2, 3, 4, 5, or N/A}}
 
 Remember to be as objective as possible and strictly adhere to the response format."""
@@ -112,7 +130,10 @@ Remember to be as objective as possible and strictly adhere to the response form
         on=["vibe", "question", model, "preference"],
         how="left",
     )
-    vibe_df["score"] = vibe_df["ranker_output_1"].apply(ranker_postprocess)
+    vibe_df[["score", "explanation", "text_refs"]] = pd.DataFrame(
+        vibe_df["ranker_output_1"].apply(ranker_postprocess).tolist(),
+        index=vibe_df.index
+    )
     
     # Create plot with vibes on y-axis and side-by-side bars for score counts
     fig = go.Figure()
@@ -174,7 +195,7 @@ The format should be a list of properties or behaviors that the model exhibits, 
 - "friendly tone when responding to non-STEM questions"
 - "code that optimizes for runtime"
 - "gives multiple opinions from different perspectives when asked to give an opinion"
-- "stories presented in the third person"
+- "uses curse words" 
 
 Note that this example is not at all exhaustive, but rather just an example of the format. Consider properties on many different axes such as tone, language, structure, content, safety, helpfulness, prompt adherence, and any other axis that you can think of. 
     
@@ -444,9 +465,11 @@ def main(
     vibe_df["pref_score"] = vibe_df["score"] * vibe_df["preference"].apply(lambda x: 1 if x == model else 0)
     vibe_question_types = get_vibe_question_types(vibe_df)
     wandb.log({"Vibe Scoring/vibe_question_types": wandb.Table(dataframe=vibe_question_types)})
+    vibe_question_types.to_csv(os.path.join(output_dir, "vibe_question_types.csv"), index=False)
 
     wandb.log({"Vibe Scoring/ranker_results": wandb.Table(dataframe=vibe_df)})
     wandb.log({"Vibe Scoring/score_dist_plot": wandb.Html(score_dist_plot.to_html())})
+    score_dist_plot.write_html(os.path.join(output_dir, "score_dist_plot.html"))
     vibe_df.to_csv(os.path.join(output_dir, "vibe_df.csv"), index=False)
 
     agg_df = (
@@ -495,6 +518,15 @@ def main(
         app = create_gradio_interface(vibe_df, model, output_dir, model_vibe_scores_plot, score_dist_plot, vibe_question_types)
         app.launch(share=True)
 
+    return {"output_dir": output_dir,
+            "model_vibe_scores_plot": model_vibe_scores_plot,
+            "score_dist_plot": score_dist_plot,
+            "vibe_question_types": vibe_question_types,
+            "vibe_df": vibe_df,
+            "agg_df": agg_df,
+            "corr_plot": corr_plot,
+            }
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
@@ -525,7 +557,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--num_final_vibes",
         type=int,
-        default=10,
+        default=3,
         help="Number of final vibes to use for analysis",
     )
     parser.add_argument(
