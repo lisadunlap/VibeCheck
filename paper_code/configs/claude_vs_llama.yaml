@@ -1,0 +1,38 @@
+project: VibeCheck-Llama3VSClaude-Iteration
+wandb: False # Set to True to log to Weights and Biases
+dummy_eval: False
+num_samples: False
+oz: False
+group_column: False
+test: False
+save_dir: pipeline_results
+# data_path: data/benchmark/arena_data.csv
+data_path: data/arena/claude-3-opus-20240229_vs_llama_train_new.csv
+test_data_path: data/arena/claude-3-opus-20240229_vs_llama_test_new.csv
+k: 10
+num_eval: 10
+batch_size: 50
+num_axes_generated: 10
+embedding_model: text-embedding-3-small
+seed: 42
+cluster_method: hierarchical 
+ranker: RelativeRanker
+sampler: Sampler
+reducer: AxisReducer
+proposer: LLMProposerFixed
+num_topic_clusters: 5
+proposer_batch_size: 5
+# judges: [gpt-3.5-turbo, llama-3-70b]
+judges: [gpt-4o-mini]
+models: [llama-3-70b-instruct, claude-3-opus-20240229]
+eval_only: False
+new_sample: True
+num_proposal_samples: 50
+new_prompt: True
+max_iterations: 3
+axes: False
+proposer_prompt: proposer_prompt_default
+
+# models
+rubric_generation_model: "gpt-4o"
+proposer_model: "gpt-4o"

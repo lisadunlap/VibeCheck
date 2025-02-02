@@ -1,0 +1,39 @@
+project: VibeCheck-CreativeWriting
+wandb: False # Set to True to log to Weights and Biases
+num_samples: False
+dummy_eval: False
+oz: False
+group_column: False
+test: False
+data_path: data/creative_writing_larger_train.csv
+test_data_path: data/creative_writing_larger_test.csv
+models: [claude-3-opus-20240229, llama-3-70b]
+dummy_preference: True
+
+k: 5
+batch_size: 50
+num_axes_generated: 30
+num_eval: 20
+embedding_model: text-embedding-3-small
+seed: 42
+cluster_method: hierarchical
+ranker: RelativeRanker
+
+sampler: Sampler
+reducer: AxisReducer
+proposer: LLMProposerFixed
+num_topic_clusters: 5
+proposer_batch_size: 5
+proposer_prompt: proposer_prompt_creative_writing
+
+judges: [gpt-4o-mini]
+eval_only: False
+num_proposal_samples: 30
+axes: False
+new_prompt: True
+
+new_sample: True
+
+# models
+rubric_generation_model: "gpt-4o"
+proposer_model: "gpt-4o"

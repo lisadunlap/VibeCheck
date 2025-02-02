@@ -1,0 +1,37 @@
+project: VibeCheck-AirBench
+wandb: False # Set to True to log to Weights and Biases
+num_samples: False
+dummy_eval: False
+oz: False
+group_column: False
+test: False
+save_dir: pipeline_results
+data_path: data/safety/AIRBench.csv
+models: ['gemini-1.5-pro', 'claude-3-sonnet']
+
+k: 5
+batch_size: 50
+num_axes_generated: 50
+num_eval: 50
+embedding_model: text-embedding-3-small
+seed: 42
+cluster_method: hierarchical
+ranker: RelativeRanker
+
+sampler: Sampler
+reducer: AxisReducer
+proposer: LLMProposerFixed
+num_topic_clusters: 5
+proposer_batch_size: 5
+
+judges: [gpt-4o-mini]
+eval_only: False
+num_proposal_samples: 20
+axes: False
+new_prompt: True
+
+new_sample: True
+
+# models
+rubric_generation_model: "gpt-4o"
+proposer_model: "gpt-4o"

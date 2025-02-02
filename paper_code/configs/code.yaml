@@ -1,0 +1,41 @@
+project: VibeCheck-LiveBench
+wandb: False # Set to True to log to Weights and Biases
+num_samples: 100
+dummy_eval: False
+oz: False
+group_column: False
+test: False
+save_dir: pipeline_results
+data_path: data/code/livebench_train.csv
+test_data_path: data/code/livebench_test.csv
+# data_path: data/benchmark/arena_friendly_and_cold_smaller.csv
+k: 5
+batch_size: 50
+num_axes_generated: 20
+num_eval: 10
+embedding_model: text-embedding-3-small
+seed: 42
+cluster_method: hierarchical
+ranker: RelativeRankerFixed
+sampler: Sampler
+reducer: AxisReducer
+proposer: LLMProposerFixed
+num_topic_clusters: 5
+proposer_batch_size: 1
+judges: [gpt-4o-mini]
+# judges: [gpt-4o]
+models: ['Claude-3-Sonnet', 'Mistral-Large']
+# ['friendly and personable', 'professional', 'casual', 'cold-and-factual', 'storyteller', 'organized', 'safety-concious', 'conspiracy-theorist', 'funny', 'imaginative', 'anotagonistic']
+eval_only: False
+num_proposal_samples: 40
+axes: False
+# detail: True
+new_prompt: True
+
+# rubric_path: "pipeline_results/livebench_train/LLMProposerMultiModel-Sampler_5-MuliRubricRankerJury/Claude-3-Sonnet-Mistral-Large_3_samples50_seed42-scoring-logs-final.json"
+
+new_sample: True
+
+# models
+rubric_generation_model: "gpt-4o"
+proposer_model: "claude-3-opus-20240229"

@@ -1,0 +1,66 @@
+project: VibeCheck-Baseline # project name in wandb
+wandb: True
+
+
+# Exp Configs
+max_iterations: 1 # number of iterations to run the pipeline
+filter: True # filter out axes
+filter_mm_only: True # filter out axes with p-values greater than 0.1 only for the model that is being compared to the MM
+ridge_regression: False # add ridge regression to the ranker
+lasso_regression: False # add lasso regression to the ranker
+give_prev_axes: True # give the previous axes to the proposer during iteration step
+dummy_preference: False # for debugging purposes
+filter_p_values: False # filter out axes with p-values greater than 0.1
+filter_pref_only: False 
+
+# Data
+data_path: data/friendly_and_cold_sample.csv
+output_name: toy_example # name of the output folder and wand run name
+test_data_path: False # path to test data, if false test data and train data are the same
+test: False
+save_dir: pipeline_results
+models: [friendly, cold] # models your comparing (columns in your dataframe)
+num_samples: False # amount of samples you use to evaluate the axes (userful for debugging)
+num_eval_samples: False # same as above but for evaluation
+group_column: False # if you want to run on every group in the data
+
+# Evaluation
+eval_only: False
+early_stopping: False
+early_stopping_threshold: 0.05
+dummy_eval: False # for debugging purposes
+num_eval: 3 # number of axes to evaluate
+num_final_eval: 3 # number of axes to evaluate in the final evaluation (after all iterations)
+eval_every_iteration: False # evaluate the axes every iteration on test set
+
+# Proposer
+proposer_batch_size: 5 # number of samples to use to get the vibes (5-10) 
+proposer: LLMProposerFixed # shouldnt change (ignore)
+proposer_prompt: proposer_prompt_freeform # prompt for proposer (could change for different applications, look in components/proposer_prompts.py)
+num_proposal_samples: 10 # IMPORTANT: number of samples to use to get the vibes (30-100, less than the size of the training set)
+proposer_model: "gpt-4o" # model to use for the proposer
+exclude_question_in_proposer: False # exclude the user question in the proposer
+proposer_only: False # only run the proposer
+
+# Reducer
+k: 3
+batch_size: 50
+num_axes_generated: 20 # in reducer, number of axes to simplify to (could be less)
+embedding_model: text-embedding-3-small # model to use for the reducer
+seed: 42
+cluster_method: hierarchical
+reducer: AxisReducer
+
+# Ranker
+ranker: RelativeRanker
+judges: [gpt-4o-mini]
+preference_judges: [gpt-4o] # judges to use for LL-as-a-Judge preference
+num_workers: 32
+
+# If set to false, then the axes will be discovered from the data. Otherwise you can set it to a list of preset axes
+axes: False
+# axes: ["Friendliness: High: Friendly and Interactive Low: Cold and Formal"]
+
+# Sampler (this is older, you can optionally cluster questions by type and propose differences for each cluster)
+sampler: Sampler
+num_topic_clusters: 5

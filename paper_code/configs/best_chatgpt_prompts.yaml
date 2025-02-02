@@ -1,0 +1,34 @@
+project: VibeCheck-BestChatGptPrompts
+wandb: True # Set to True to log to Weights and Biases
+num_samples: 100
+dummy_eval: True
+oz: False
+group_column: False
+test: False
+save_dir: pipeline_results
+# data_path: data/arena/gpt-4-0125-preview_vs_llama_turn1.csv
+data_path: data/helm/best_chatgpt_prompts_train.csv
+test_data_path: data/helm/best_chatgpt_prompts_test.csv
+k: 3
+batch_size: 50
+embedding_model: text-embedding-3-small
+seed: 42
+cluster_method: hierarchical 
+ranker: RelativeRankerFixed
+sampler: Sampler
+reducer: AxisReducer
+proposer: LLMProposerFixed
+num_topic_clusters: 10
+proposer_batch_size: 5
+judges: [gpt-4o-mini llama-3-70b]
+models: [claude_1_3, command_xlarge]
+eval_only: False
+axes: False
+num_axes_generated: 10
+num_proposal_samples: 50
+detail: True
+new_prompt: True
+
+# models
+rubric_generation_model: "gpt-4o"
+proposer_model: "gpt-4o"
