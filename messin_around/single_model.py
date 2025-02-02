@@ -19,13 +19,14 @@ from utils import (
     create_side_by_side_plot,
 )
 
+
 def ranker_postprocess(output: str) -> tuple[float, str, str]:
     """
     Extracts the numerical score, explanation, and text references from the ranker's output.
-    
+
     Args:
         output (str): Raw output from the ranking model containing explanation and score
-        
+
     Returns:
         tuple[float, str, str]: Tuple containing:
             - float: Extracted score (1-5) or 0.0 if N/A or invalid
@@ -36,40 +37,47 @@ def ranker_postprocess(output: str) -> tuple[float, str, str]:
         explanation = ""
         text_refs = ""
         score = 0.0
-        
+
         # Extract explanation
         if "Explanation:" in output:
-            explanation_parts = output.split("Explanation:")[-1].split("Text from outputs")[0].strip()
+            explanation_parts = (
+                output.split("Explanation:")[-1].split("Text from outputs")[0].strip()
+            )
             explanation = explanation_parts
-            
+
         # Extract text references
         if "Text from outputs which aligns with the property:" in output:
-            text_parts = output.split("Text from outputs which aligns with the property:")[-1].split("Score:")[0].strip()
+            text_parts = (
+                output.split("Text from outputs which aligns with the property:")[-1]
+                .split("Score:")[0]
+                .strip()
+            )
             text_refs = text_parts
-            
+
         # Extract score
         if "Score:" not in output:
             return 0.0, explanation, text_refs
-            
+
         score_text = output.split("Score:")[-1].strip()
-        
+
         # Handle N/A case
         if "N/A" in score_text:
             return 0.0, explanation, text_refs
-            
+
         # Extract first number found in the score text
         score = float(next(num for num in score_text.split() if num.isdigit()))
-        
+
         # Validate score range
         if score < 1 or score > 5:
             print(f"Invalid score: {score} in {output}")
             return 0.0, explanation, text_refs
-            
+
         return score, explanation, text_refs
-        
+
     except (ValueError, StopIteration):
         print(f"Error in ranker_postprocess: {output}")
         return 0.0, "", ""
+
 
 def rank_axes(vibes: List[str], df: pd.DataFrame, model: str):
     """
@@ -132,35 +140,37 @@ Remember to be as objective as possible and strictly adhere to the response form
     )
     vibe_df[["score", "explanation", "text_refs"]] = pd.DataFrame(
         vibe_df["ranker_output_1"].apply(ranker_postprocess).tolist(),
-        index=vibe_df.index
+        index=vibe_df.index,
     )
-    
+
     # Create plot with vibes on y-axis and side-by-side bars for score counts
     fig = go.Figure()
     possible_scores = [0, 1, 2, 3, 4, 5]
-    
+
     for score in possible_scores:
         counts = []
         for vibe in vibe_df["vibe"].unique():
             vibe_df_vibe = vibe_df[vibe_df["vibe"] == vibe]
             count = (vibe_df_vibe["score"] == score).sum()
             counts.append(count)
-        
-        fig.add_trace(go.Bar(
-            name=f"Score {score}",
-            y=vibe_df["vibe"].unique(),
-            x=counts,
-            orientation='h'
-        ))
-    
+
+        fig.add_trace(
+            go.Bar(
+                name=f"Score {score}",
+                y=vibe_df["vibe"].unique(),
+                x=counts,
+                orientation="h",
+            )
+        )
+
     fig.update_layout(
         title="Score Distribution per Vibe<br><sup>Note: 0 indicates vibe is irrelevant to the prompt</sup>",
         yaxis_title="Vibe",
         xaxis_title="Count",
-        barmode='group',
+        barmode="group",
         height=800,
     )
-    
+
     wandb.log({"Vibe Scoring/score_value_counts_plot": wandb.Html(fig.to_html())})
     return vibe_df, fig
 
@@ -181,7 +191,11 @@ Each property should be <= 10 words. Order your final list of properties by how 
 
 
 def propose_vibes(
-    df: pd.DataFrame, model: str, num_proposal_samples: int = 30, num_final_vibes: int = 10, batch_size: int = 10
+    df: pd.DataFrame,
+    model: str,
+    num_proposal_samples: int = 30,
+    num_final_vibes: int = 10,
+    batch_size: int = 10,
 ):
     proposer_prompt_freeform = """
 You are a machine learning researcher trying to discover interesting behaviors of a single model given a set of questions and responses.
@@ -204,8 +218,7 @@ Remember that these properties should be human interpretable, concise (<= 15 wor
     # Create combined responses to get in LOTUS format
     df["single_combined_response"] = df.apply(
         lambda row: (
-            f"User prompt:\n{row['question']}\n\n"
-            f"Model:\n{row[model]}\n\n"
+            f"User prompt:\n{row['question']}\n\n" f"Model:\n{row[model]}\n\n"
         ),
         axis=1,
     )
@@ -240,11 +253,14 @@ Remember that these properties should be human interpretable, concise (<= 15 wor
     print("Vibes:\n" + "\n".join(vibes))
     return vibes
 
+
 def get_vibe_question_types(vibe_df: pd.DataFrame, batch_size: int = 50):
     """Describe what types of questions result in high scores for a given vibe."""
     # Create a copy of the filtered dataframe to avoid warnings
     filtered_vibe_df = vibe_df[vibe_df["score"].abs() > 0.0].copy()
-    vibin_questions = filtered_vibe_df.sort_values(["vibe", "score"], ascending=[True, False])
+    vibin_questions = filtered_vibe_df.sort_values(
+        ["vibe", "score"], ascending=[True, False]
+    )
 
     prompt = """You are a machine learning researcher trying to discover what types of questions result in a model exhibiting a certain behavior. Given the following behavior and a list of questions along with a score of how much the model exhibits the behavior on that question, describe what types of questions result in the model exhibiting the behavior. Each score is between 1 and 5, where 1 is does not exhibit the behavior at all, and 5 is exhibits the behavior completely.
 
@@ -263,21 +279,21 @@ Question types which do not exhibit the behavior: <description>
         sampled_df = single_vibe_df.sample(min(batch_size, len(single_vibe_df)))
         input_texts = sampled_df.apply(
             lambda row: f"Behavior: {row['vibe']}\nQuestion: {row['question']}\nScore: {row['score']}",
-            axis=1
+            axis=1,
         ).tolist()
         input_text = "\n-------------\n".join(input_texts)
-        new_df.append({
-            "vibe": vibe,
-            "input_text": input_text
-        })
-    
+        new_df.append({"vibe": vibe, "input_text": input_text})
+
     new_df = pd.DataFrame(new_df)
     vibe_question_types = new_df.sem_map(
         prompt, return_raw_outputs=True, suffix="vibe_question_types"
     )
     return vibe_question_types
 
-def get_examples_for_vibe(vibe_df: pd.DataFrame, vibe: str, model: str, num_examples: int = 5):
+
+def get_examples_for_vibe(
+    vibe_df: pd.DataFrame, vibe: str, model: str, num_examples: int = 5
+):
     """Get example pairs where the given vibe was strongly present."""
     vibe_examples = vibe_df[(vibe_df["vibe"] == vibe) & (vibe_df["score"].abs() > 0.0)]
     examples = []
@@ -329,10 +345,17 @@ def create_vibe_correlation_plot(vibe_df: pd.DataFrame, model: str):
     return fig
 
 
-def create_gradio_interface(vibe_df: pd.DataFrame, model: str, output_dir: str, model_vibe_scores_plot: go.Figure, score_dist_plot: go.Figure, vibe_question_types: pd.DataFrame):
+def create_gradio_interface(
+    vibe_df: pd.DataFrame,
+    model: str,
+    output_dir: str,
+    model_vibe_scores_plot: go.Figure,
+    score_dist_plot: go.Figure,
+    vibe_question_types: pd.DataFrame,
+):
     """Creates a Gradio interface for visualizing VibeCheck results."""
     import gradio as gr
-        
+
     def show_examples(selected_vibe):
         examples = get_examples_for_vibe(vibe_df, selected_vibe, model, num_examples=5)
         markdown = f"### What sort of prompts elicit the vibe?\n"
@@ -346,16 +369,16 @@ def create_gradio_interface(vibe_df: pd.DataFrame, model: str, output_dir: str, 
             markdown += f"**Judge Output:**\n{ex['core_output']}\n\n"
             markdown += "---\n\n"
         return markdown
-    
+
     with gr.Blocks() as app:
         gr.Markdown("# VibeCheck Analysis Results")
-        
+
         with gr.Row():
             with gr.Column():
                 gr.Plot(model_vibe_scores_plot)
             with gr.Column():
                 gr.Plot(score_dist_plot)
-        
+
         gr.Markdown("## Example Responses")
         vibe_df_w_types = vibe_df.merge(vibe_question_types, on="vibe", how="left")
         vibe_dropdown = gr.Dropdown(
@@ -364,7 +387,7 @@ def create_gradio_interface(vibe_df: pd.DataFrame, model: str, output_dir: str, 
         )
         examples_md = gr.Markdown()
         vibe_dropdown.change(show_examples, vibe_dropdown, examples_md)
-        
+
     return app
 
 
@@ -381,7 +404,7 @@ def main(
     """Run VibeCheck analysis to identify and analyze behavioral differences between two language models.
 
     Args:
-        data_path (str): Path to CSV file containing model outputs. Must include columns for model responses 
+        data_path (str): Path to CSV file containing model outputs. Must include columns for model responses
             and a 'preference' column indicating which model output was preferred.
         model (str): Name of the model to analyze. This should match the column name in the CSV.
         num_proposal_samples (int, optional): Number of samples to use when proposing vibes. Defaults to 30.
@@ -431,8 +454,12 @@ def main(
         yaxis_title="Count",
         template="plotly_white",
     )
-    wandb.log({"preference_distribution": wandb.Html(preference_distribution_plot.to_html())})
-    preference_distribution_plot.write_html(os.path.join(output_dir, "preference_distribution.html"))
+    wandb.log(
+        {"preference_distribution": wandb.Html(preference_distribution_plot.to_html())}
+    )
+    preference_distribution_plot.write_html(
+        os.path.join(output_dir, "preference_distribution.html")
+    )
     vibes = propose_vibes(
         df,
         model,
@@ -453,19 +480,21 @@ def main(
     lm = LM(model="gpt-4o-mini", cache=cache)
     lotus.settings.configure(lm=lm, enable_cache=True)
     if test:
-        vibe_df, score_dist_plot = rank_axes(
-            vibes[:3], df, model
-        )
+        vibe_df, score_dist_plot = rank_axes(vibes[:3], df, model)
     else:
-        vibe_df, score_dist_plot = rank_axes(
-            vibes, df, model
-        )
+        vibe_df, score_dist_plot = rank_axes(vibes, df, model)
 
     # Compute preference alignment
-    vibe_df["pref_score"] = vibe_df["score"] * vibe_df["preference"].apply(lambda x: 1 if x == model else 0)
+    vibe_df["pref_score"] = vibe_df["score"] * vibe_df["preference"].apply(
+        lambda x: 1 if x == model else 0
+    )
     vibe_question_types = get_vibe_question_types(vibe_df)
-    wandb.log({"Vibe Scoring/vibe_question_types": wandb.Table(dataframe=vibe_question_types)})
-    vibe_question_types.to_csv(os.path.join(output_dir, "vibe_question_types.csv"), index=False)
+    wandb.log(
+        {"Vibe Scoring/vibe_question_types": wandb.Table(dataframe=vibe_question_types)}
+    )
+    vibe_question_types.to_csv(
+        os.path.join(output_dir, "vibe_question_types.csv"), index=False
+    )
 
     wandb.log({"Vibe Scoring/ranker_results": wandb.Table(dataframe=vibe_df)})
     wandb.log({"Vibe Scoring/score_dist_plot": wandb.Html(score_dist_plot.to_html())})
@@ -481,22 +510,32 @@ def main(
 
     # plot average scores per vibe
     model_vibe_scores_plot = go.Figure()
-    model_vibe_scores_plot.add_trace(go.Bar(
-        y=agg_df["vibe"],  # vibes on y-axis
-        x=agg_df["score"],  # average scores on x-axis
-        orientation='h',    # horizontal bars
-        text=agg_df["score"].round(2),  # show score values on bars
-        textposition='auto',
-    ))
+    model_vibe_scores_plot.add_trace(
+        go.Bar(
+            y=agg_df["vibe"],  # vibes on y-axis
+            x=agg_df["score"],  # average scores on x-axis
+            orientation="h",  # horizontal bars
+            text=agg_df["score"].round(2),  # show score values on bars
+            textposition="auto",
+        )
+    )
     model_vibe_scores_plot.update_layout(
         title="Average Vibe Scores",
         xaxis_title="Average Score",
         yaxis_title="Vibe",
         height=max(400, len(agg_df) * 30),  # dynamic height based on number of vibes
-        margin=dict(l=200)  # add left margin for vibe labels
+        margin=dict(l=200),  # add left margin for vibe labels
     )
-    wandb.log({"Vibe Plots/model_vibe_scores_plot": wandb.Html(model_vibe_scores_plot.to_html())})
-    model_vibe_scores_plot.write_html(os.path.join(output_dir, "model_vibe_scores_plot.html"))
+    wandb.log(
+        {
+            "Vibe Plots/model_vibe_scores_plot": wandb.Html(
+                model_vibe_scores_plot.to_html()
+            )
+        }
+    )
+    model_vibe_scores_plot.write_html(
+        os.path.join(output_dir, "model_vibe_scores_plot.html")
+    )
     # Filter out vibes with low separation or preference
     vibe_df = vibe_df[vibe_df["score"].abs() > 0.05]
     vibe_df = vibe_df[vibe_df["pref_score"].abs() > 0.05]
@@ -512,20 +551,28 @@ def main(
 
     # Close wandb run
     wandb.finish()
-    
+
     # Launch Gradio interface if requested
     if gradio:
-        app = create_gradio_interface(vibe_df, model, output_dir, model_vibe_scores_plot, score_dist_plot, vibe_question_types)
+        app = create_gradio_interface(
+            vibe_df,
+            model,
+            output_dir,
+            model_vibe_scores_plot,
+            score_dist_plot,
+            vibe_question_types,
+        )
         app.launch(share=True)
 
-    return {"output_dir": output_dir,
-            "model_vibe_scores_plot": model_vibe_scores_plot,
-            "score_dist_plot": score_dist_plot,
-            "vibe_question_types": vibe_question_types,
-            "vibe_df": vibe_df,
-            "agg_df": agg_df,
-            "corr_plot": corr_plot,
-            }
+    return {
+        "output_dir": output_dir,
+        "model_vibe_scores_plot": model_vibe_scores_plot,
+        "score_dist_plot": score_dist_plot,
+        "vibe_question_types": vibe_question_types,
+        "vibe_df": vibe_df,
+        "agg_df": agg_df,
+        "corr_plot": corr_plot,
+    }
 
 
 if __name__ == "__main__":

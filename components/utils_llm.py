@@ -9,18 +9,9 @@ import openai
 from openai import OpenAI
 import anthropic
 import datetime
-from wandb.sdk.data_types.trace_tree import Trace
-import concurrent.futures
+import numpy as np
 
-from serve.global_vars import (
-    LLM_CACHE_FILE,
-    VICUNA_URL,
-    LLM_EMBED_CACHE_FILE,
-    OPENAI_API_KEY,
-    ANTHROPIC_API_KEY,
-    LLAMA_URL,
-)
-from serve.utils_general import (
+from components.utils_general import (
     get_from_cache,
     save_to_cache,
     save_emb_to_cache,
@@ -29,29 +20,27 @@ from serve.utils_general import (
 
 logging.basicConfig(level=logging.ERROR)
 
-if not os.path.exists(LLM_CACHE_FILE):
-    os.makedirs(LLM_CACHE_FILE)
+if not os.path.exists("cache/llm_cache"):
+    os.makedirs("cache/llm_cache")
 
-llm_cache = lmdb.open(LLM_CACHE_FILE, map_size=int(1e11))
-llm_embed_cache = lmdb.open(LLM_EMBED_CACHE_FILE, map_size=int(1e11))
+if not os.path.exists("cache/llm_embed_cache"):
+    os.makedirs("cache/llm_embed_cache")
 
-openai.api_key = OPENAI_API_KEY
-anthropic.api_key = ANTHROPIC_API_KEY
-os.environ["ANTHROPIC_API_KEY"] = ANTHROPIC_API_KEY
-os.environ["OPENAI_API_KEY"] = OPENAI_API_KEY
+llm_cache = lmdb.open("cache/llm_cache", map_size=int(1e11))
+llm_embed_cache = lmdb.open("cache/llm_embed_cache", map_size=int(1e11))
 
 
 def get_llm_output(
     prompt: str, model: str, cache=True, system_prompt=None, history=[], max_tokens=256
 ) -> str:
     openai.api_base = (
-        "https://api.openai.com/v1" if model != "llama-3-8b" else LLAMA_URL
+        "https://api.openai.com/v1" if model != "llama-3-8b" else "http://localhost:8001/v1"
     )
     if "gpt" in model:
         client = OpenAI()
     elif model == "llama-3-8b":
         client = OpenAI(
-            base_url=LLAMA_URL,
+            base_url="http://localhost:8001/v1",
         )
     else:
         client = anthropic.Anthropic()
@@ -169,7 +158,7 @@ def get_llm_output(
 
 
 def get_llm_embedding(prompt: str, model: str) -> str:
-    openai.api_base = "https://api.openai.com/v1" if model != "vicuna" else VICUNA_URL
+    openai.api_base = "https://api.openai.com/v1"
     client = OpenAI()
     key = json.dumps([model, prompt])
 
@@ -188,6 +177,7 @@ def get_llm_embedding(prompt: str, model: str) -> str:
                 client.embeddings.create(input=[text], model=model).data[0].embedding
             )
             save_emb_to_cache(key, embedding, llm_embed_cache)
+            
             return embedding
         except Exception as e:
             logging.error(f"LLM Error: {e}")

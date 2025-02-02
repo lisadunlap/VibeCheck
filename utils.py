@@ -10,6 +10,7 @@ from sklearn.metrics import accuracy_score
 from typing import List
 from plotly.subplots import make_subplots
 from plotly import graph_objects as go
+from sklearn.utils import shuffle
 
 
 def train_and_evaluate_model(
@@ -56,10 +57,8 @@ def train_and_evaluate_model(
             )
         else:
             print("Using all data for training and testing")
-            X_train = X
-            X_test = X
-            y_train = y
-            y_test = y
+            X_train, y_train = shuffle(X, y, random_state=42 + split)
+            X_test, y_test = X, y
 
         model.fit(X_train, y_train)
 
@@ -139,40 +138,6 @@ def get_feature_df(vibe_df: pd.DataFrame):
 
     return feature_df, X_pref, y_pref, y_identity
 
-def parse_bullets(text: str):
-    """
-    Parse bullet points from text.
-    """
-    lines = text.split("\n")
-    bullets = []
-    for line in lines:
-        if line.strip().startswith("-") or line.strip().startswith("*"):
-            bullets.append(line.strip().lstrip("- *").strip())
-    return bullets
-
-
-def proposer_postprocess(text: str):
-    """
-    Process the output from the proposer.
-    """
-    bullets = parse_bullets(text)
-    bullets = [b.replace("**", "").replace("-", "") for b in bullets]
-    return bullets
-
-
-def parse_axes(text: str):
-    """
-    Parse axes from text.
-    """
-    lines = [line.strip() for line in text.split("\n") if line.strip()]
-    axes = []
-    for line in lines:
-        cleaned = line.strip('1234567890. -"')
-        cleaned = cleaned.replace("**", "")
-        if cleaned:
-            axes.append(cleaned)
-    return axes
-
 
 def get_pref_score(preference: str, models: list):
     """
@@ -183,28 +148,6 @@ def get_pref_score(preference: str, models: list):
     elif preference == models[1]:
         return -1
     else:
-        return 0
-
-
-def ranker_postprocess(output: str) -> int:
-    """
-    Postprocess the ranker's output to extract whether model A is favored (1), B is favored (-1), or tie/NA (0).
-    """
-    try:
-        output = output.replace("Output ", "").replace("output ", "")
-        output = re.sub(r"[#*]", "", output)
-        score_pattern = re.compile(r"Model: (A|B|N/A|unsure|equal)", re.I | re.M)
-        score = score_pattern.findall(output)
-        if not score:
-            return 0
-        if score[0].lower() == "a":
-            return 1
-        elif score[0].lower() == "b":
-            return -1
-        else:
-            return 0
-    except Exception as e:
-        print(f"Error in ranker_postprocess: {output}")
         return 0
 
 
@@ -245,6 +188,8 @@ def create_side_by_side_plot(
         error_cols: Optional list of two column names for error bars
         colors: Tuple of two colors for the bars
     """
+    df = df.sort_values(by=x_cols[0], ascending=True)
+
     fig = make_subplots(
         rows=1,
         cols=2,
@@ -253,31 +198,17 @@ def create_side_by_side_plot(
         specs=[[{"type": "bar"}, {"type": "bar"}]],
     )
 
-    # Wrap long labels
-    def wrap_text(text, width=100):
-        if len(text) <= width:
-            return text
-        words = text.split()
-        lines = []
-        current_line = []
-        current_length = 0
-        
-        for word in words:
-            if current_length + len(word) + 1 <= width:
-                current_line.append(word)
-                current_length += len(word) + 1
-            else:
-                lines.append(" ".join(current_line))
-                current_line = [word]
-                current_length = len(word)
-        
-        if current_line:
-            lines.append(" ".join(current_line))
-        return "<br>".join(lines)
+    # Truncate labels to first 5 words but keep original for hover
+    def truncate_text(text, num_words=5):
+        words = str(text).split()
+        if len(words) <= num_words:
+            return " ".join(words)
+        return " ".join(words[:num_words]) + "..."
 
-    # Apply wrapping to y-axis labels
-    wrapped_labels = [wrap_text(str(label)) for label in df[y_col]]
-    
+    # Create both truncated and full labels
+    truncated_labels = [truncate_text(label) for label in df[y_col]]
+    full_labels = [str(label) for label in df[y_col]]
+
     for i, (x_col, color) in enumerate(zip(x_cols, colors), 1):
         error_x = None
         if error_cols:
@@ -287,12 +218,16 @@ def create_side_by_side_plot(
 
         fig.add_trace(
             go.Bar(
-                y=wrapped_labels,  # Use wrapped labels instead of df[y_col]
+                y=truncated_labels,  # Truncated labels for y-axis
                 x=df[x_col],
                 name=titles[i - 1],
                 orientation="h",
                 marker_color=color,
                 error_x=error_x,
+                hovertemplate="<b>%{customdata}</b><br>"  # Show full label in hover
+                + "Value: %{x}<br>"
+                + "<extra></extra>",
+                customdata=full_labels,  # Full labels for hover
             ),
             row=1,
             col=i,
@@ -328,5 +263,155 @@ def create_side_by_side_plot(
 
     fig.update_yaxes(title_text="", row=1, col=1, ticksuffix="   ")
     fig.update_yaxes(title_text="", showticklabels=False, row=1, col=2)
+
+    return fig
+
+
+def get_examples_for_vibe(
+    vibe_df: pd.DataFrame, vibe: str, models: List[str], num_examples: int = 5
+):
+    """Get example pairs where the given vibe was strongly present."""
+    vibe_examples = vibe_df[(vibe_df["vibe"] == vibe) & (vibe_df["score"].abs() > 0.0)]
+    examples = []
+    for _, row in vibe_examples.head(num_examples).iterrows():
+        examples.append(
+            {
+                "prompt": row["question"],
+                "output_a": row[models[0]],
+                "output_b": row[models[1]],
+                "score": row["score"],
+                "core_output": row["raw_outputranker_output_1"],
+            }
+        )
+    return examples
+
+
+def create_gradio_app(
+    vibe_df: pd.DataFrame,
+    models: List[str],
+    coef_df: pd.DataFrame,
+    corr_plot: go.Figure,
+    vibe_question_types: pd.DataFrame,
+):
+    import gradio as gr
+
+    # Create the plots
+    agg_df = (
+        vibe_df.groupby("vibe")
+        .agg({"pref_score": "mean", "score": "mean"})
+        .reset_index()
+    )
+
+    # Create plots and convert them to HTML strings
+    heuristics_plot = create_side_by_side_plot(
+        df=agg_df,
+        y_col="vibe",
+        x_cols=["score", "pref_score"],
+        titles=("Model Identity", "Preference Prediction"),
+        main_title="Vibe Heuristics",
+        models=models,
+    )
+
+    coef_plot = create_side_by_side_plot(
+        df=coef_df,
+        y_col="vibe",
+        x_cols=["coef_modelID", "coef_preference"],
+        titles=("Model Identity", "Preference Prediction"),
+        main_title="Vibe Model Coefficients",
+        models=models,
+        error_cols=["coef_std_modelID", "coef_std_preference"],
+    )
+
+    def show_examples(vibe):
+        examples = get_examples_for_vibe(vibe_df, vibe, models)
+        markdown = f"### What sort of prompts elicit the vibe?\n"
+        markdown += f"{vibe_question_types[vibe_question_types['vibe'] == vibe]['vibe_question_types'].values[0]}\n\n"
+        markdown += "---\n\n"
+        for i, ex in enumerate(examples, 1):
+            markdown += f"### Example {i} ({models[0] if ex['score'] > 0 else models[1]} vibe)\n"
+            markdown += f"**Prompt:**\n{ex['prompt']}\n\n"
+            markdown += f"**{models[0]}:**\n{ex['output_a']}\n\n"
+            markdown += f"**{models[1]}:**\n{ex['output_b']}\n\n"
+            markdown += f"**Ranker Output:**\n{ex['core_output']}\n\n"
+            markdown += "---\n\n"
+        return markdown
+
+    with gr.Blocks() as app:
+        gr.Markdown("# <center>It's all about the ✨vibes✨</center>")
+
+        with gr.Accordion("Plots", open=True):
+            with gr.Row():
+                gr.Plot(heuristics_plot)
+
+            with gr.Row():
+                gr.Plot(coef_plot)
+
+            with gr.Row():
+                gr.Plot(corr_plot)
+
+        gr.Markdown("## Vibe Examples")
+        vibe_df_w_types = vibe_df.merge(vibe_question_types, on="vibe", how="left")
+        vibe_dropdown = gr.Dropdown(
+            choices=vibe_df_w_types["vibe"].unique().tolist(),
+            label="Select a vibe to see examples",
+        )
+        examples_output = gr.Markdown()
+        vibe_dropdown.change(
+            fn=show_examples, inputs=[vibe_dropdown], outputs=[examples_output]
+        )
+
+    return app
+
+
+def create_vibe_correlation_plot(vibe_df: pd.DataFrame, models: List[str]):
+    """Creates a correlation matrix plot for vibe scores."""
+    
+    vibe_pivot = vibe_df.pivot_table(
+        index=["question", models[0], models[1]], columns="vibe", values="score"
+    ).reset_index()
+    vibe_pivot = vibe_pivot.fillna(0)
+
+    # Calculate correlation matrix for just the vibe scores
+    vibe_cols = vibe_pivot.columns[3:]  # Skip the index columns
+    corr_matrix = vibe_pivot[vibe_cols].corr()
+
+    # Truncate labels
+    def truncate_text(text, num_words=5):
+        words = str(text).split()
+        if len(words) <= num_words:
+            return " ".join(words)
+        return " ".join(words[:num_words]) + "..."
+
+    truncated_labels = [truncate_text(col) for col in corr_matrix.columns]
+    full_labels = list(corr_matrix.columns)
+
+    # Create heatmap
+    fig = go.Figure(
+        data=go.Heatmap(
+            z=corr_matrix,
+            x=truncated_labels,  # Use truncated labels for display
+            y=truncated_labels,
+            colorscale="RdBu",
+            zmid=0,
+            text=np.round(corr_matrix, 2),
+            texttemplate="%{text}",
+            textfont={"size": 10},
+            hoverongaps=False,
+            hovertemplate=(
+                "x: %{customdata[0]}<br>"  # Show full labels in hover
+                "y: %{customdata[1]}<br>"
+                "correlation: %{z:.2f}<br>"
+                "<extra></extra>"
+            ),
+            customdata=[[x, y] for x in full_labels for y in full_labels],  # Full labels for hover
+        )
+    )
+
+    fig.update_layout(
+        title="Vibe Score Correlations",
+        xaxis_tickangle=-45,
+        width=800,
+        height=800,
+    )
 
     return fig

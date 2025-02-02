@@ -2,20 +2,19 @@
 
 
 ### [VibeCheck: Discover and Quantify Qualitative Differences in Large Language Models](https://arxiv.org/abs/2410.12851)
-The title sucks I know, but the paper's alright.
 
 <p align="center">
   <img src="method_vibecheck.png" width="800">
 </p>
 
 
-**This is a simplified and more user-friendly version of the VibeCheck paper.** Original code is in `_deprecated` and should run, it's just very messy. Still working on adding all the functionality of the orignal code but the core functionality is here and the visualizations are much better. Namely we moved to using [LOTUS](https://lotus-ai.readthedocs.io/en/latest/), a pandas wrapper to easily run LLM/embedding calls on your data. It reduced my many thousand lines of code to like 2 files. I'm telling you it's the bees knees.
+**This is a simplified and more user-friendly version of the VibeCheck paper.** Original code is in `paper_code` and should run, it's just very messy. Still working on adding all the functionality of the orignal code but the core functionality is here and the visualizations are much better. Namely we moved to using [LOTUS](https://lotus-ai.readthedocs.io/en/latest/), a pandas wrapper to easily run LLM/embedding calls on your data. It reduced my many thousand lines of code to like 2 files. I'm telling you it's the bees knees.
 
 ## Data
 
 * [Link to chatbot arena data](https://huggingface.co/datasets/lmarena-ai/Llama-3-70b-battles)
 * [Human VS GPT (HC3)](https://huggingface.co/datasets/Hello-SimpleAI/HC3)
-* [HELM Predictions](https://crfm.stanford.edu/helm/classic/latest/) (fair warning, this is a real pain to download)
+* [HELM Predictions](https://crfm.stanford.edu/helm/classic/latest/)
 
 ## Quickstart
 
