@@ -55,6 +55,7 @@ def propose_vibes(
     num_final_vibes: int = 10,
     batch_size: int = 5,
     current_vibes: List[str] = [],
+    shuffle_positions: bool = False,
 ):
     proposer_prompt_freeform = """You are a machine learning researcher trying to figure out the major differences between the behaviors of two llms by finding differences in their responses to the same set of questions and seeing if these differences correspond with user preferences. Write down as many differences as you can find between the two outputs. Please format your differences as a list of properties that appear more in one output than the other.
 
@@ -93,7 +94,17 @@ If there are no substantive differences between the outputs, please respond with
         ),
         axis=1,
     )
-    proposer_df = df.sample(num_proposal_samples, random_state=42).reset_index(
+    other_df = df.copy()
+    other_df["single_combined_response"] = other_df.apply(
+        lambda row: (
+            f"User prompt:\n{row['question']}\n\n"
+            f"Model 1:\n{row[models[1]]}\n\n"
+            f"Model 2:\n{row[models[0]]}"
+        ),
+        axis=1,
+    )
+    proposer_df = pd.concat([df, other_df])
+    proposer_df = proposer_df.sample(num_proposal_samples, random_state=42).reset_index(
         drop=True
     )
     proposer_df["batch_id"] = proposer_df.index // batch_size

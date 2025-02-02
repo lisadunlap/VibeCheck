@@ -332,19 +332,19 @@ def main(config):
     running_vibe_df = None  # all vibe scores for all iterations
     if len(config.initial_vibes) > 0:
         running_vibes = config.initial_vibes
-    else:
-        all_vibes = {"vibes": [], "iteration": 0, "kept_vibes": []}
+    vibes_each_iteration = []
 
     for iteration in range(config.iterations):
         # 1. Propose vibes
-        propose_results = vibe_discovery(df, config, output_dir)
+        propose_results = vibe_discovery(df, config, output_dir, running_vibes)
         if config.proposer_only:
             wandb.finish()
             return
+        running_vibes = running_vibes +propose_results["vibes"]
 
         # 2. Rank vibes
         rank_results = vibe_validation(
-            propose_results["vibes"], df, config, cache, output_dir
+            running_vibes, df, config, cache, output_dir
         )
         rank_results["vibe_df"]["iteration"] = iteration
         if running_vibe_df is None:
@@ -352,11 +352,27 @@ def main(config):
         else:
             running_vibe_df = pd.concat([running_vibe_df, rank_results["vibe_df"]])
 
+        add_running_vibe_df = (
+            running_vibe_df.groupby("vibe")
+            .agg({"pref_score": "mean", "score": "mean"})
+            .reset_index()
+        )
+        top_vibes = add_running_vibe_df.sort_values("score", ascending=False).head(config.num_final_vibes)
+        ranking_df_iteration = running_vibe_df[running_vibe_df["vibe"].isin(top_vibes["vibe"])]
+        running_vibes = running_vibe_df["vibe"].unique()
+
+        vibes_each_iteration += [{
+            "iteration": iteration,
+            "vibes": running_vibe_df["vibe"].unique(),
+            "kept_vibes": top_vibes["vibe"].unique()
+        }]
+
         # 3. Train preference prediction
         train_results = train_preference_prediction(
-            rank_results["vibe_df"], config, output_dir
+            ranking_df_iteration, config, output_dir
         )
         wandb.log({"iteration": iteration, **train_results["metrics"]})
+        wandb.log({"vibes_each_iteration": wandb.Table(dataframe=pd.DataFrame(vibes_each_iteration))})
 
     # 4. Get vibe question types (what types of questions result in high scores for a given vibe)
     vibe_question_types = get_vibe_question_types(rank_results["vibe_df"])
@@ -366,6 +382,8 @@ def main(config):
     vibe_question_types.to_csv(
         os.path.join(output_dir, "vibe_question_types.csv"), index=False
     )
+
+    wandb.log({"vibes_each_iteration": wandb.Table(dataframe=pd.DataFrame(vibes_each_iteration))})
 
     wandb.finish()
 
