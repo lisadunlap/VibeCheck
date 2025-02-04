@@ -54,12 +54,13 @@ def convert_scores(scores: List[str], original_models: List[str]) -> List[int]:
 #     def __init__(self, config: OmegaConf):
 #         super().__init__(config)
 #         self.single_position_rank = config["ranker"].get("single_position_rank", False)
-        
-#     def score(self, vibes: List[str], df: pd.DataFrame, models: List[str]) -> pd.DataFrame:
-#         """
-#         Scores the given vibe.
-#         """
-#         pass
+
+# class VibeRankerEmbedding(VibeRankerBase):
+#     """
+#     Uses embedding similarity to score each response pair.
+#     """
+#     def __init__(self, config: OmegaConf):
+#         super().__init__(config)
 
 def build_vibe_df(vibes: List[str], df: pd.DataFrame) -> pd.DataFrame:
     """Helper: Build vibe_df by concatenating df copies for each vibe."""
@@ -341,3 +342,4 @@ def rank_vibes_embedding(vibes: List[str],
     # drop embeddings
     vibe_df = vibe_df.drop(columns=["model_a_embedding", "model_b_embedding", "vibe_embedding"])
     return vibe_df
+i h
