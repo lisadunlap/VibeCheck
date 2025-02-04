@@ -2,6 +2,7 @@ import pandas as pd
 from typing import List
 import wandb
 import litellm
+import numpy as np
 
 
 def parse_bullets(text: str):
@@ -108,9 +109,27 @@ If there are no substantive differences between the outputs, please respond with
         drop=True
     )
     proposer_df["batch_id"] = proposer_df.index // batch_size
+    
+    # Add shuffling of positions across batches
+    if shuffle_positions:
+        # Randomly decide which batches should have swapped positions
+        swap_batches = np.random.choice([True, False], size=proposer_df["batch_id"].max() + 1)
+        proposer_df["should_swap"] = proposer_df["batch_id"].map(dict(enumerate(swap_batches)))
+        # Apply the swap for selected batches
+        proposer_df.loc[proposer_df["should_swap"], "single_combined_response"] = proposer_df[proposer_df["should_swap"]].apply(
+            lambda row: (
+                f"User prompt:\n{row['question']}\n\n"
+                f"Model 1:\n{row[models[1]]}\n\n"
+                f"Model 2:\n{row[models[0]]}"
+            ),
+            axis=1,
+        )
+        proposer_df = proposer_df.drop("should_swap", axis=1)
+
     proposer_df["combined_responses"] = proposer_df.groupby("batch_id")[
         "single_combined_response"
     ].transform(lambda x: "\n-------------\n".join(x))
+    
     proposer_df = proposer_df.drop_duplicates("batch_id")
     if current_vibes:
         # add current vibes to the combined responses

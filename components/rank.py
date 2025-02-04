@@ -4,7 +4,7 @@ import wandb
 import re
 
 
-def ranker_postprocess(output: str) -> int:
+def ranker_postprocess(output: str, models: List[str]) -> str:
     """
     Postprocess the ranker's output to extract whether model A is favored (1), B is favored (-1), or tie/NA (0).
     """
@@ -14,34 +14,37 @@ def ranker_postprocess(output: str) -> int:
         score_pattern = re.compile(r"Model: (A|B|N/A|unsure|equal)", re.I | re.M)
         score = score_pattern.findall(output)
         if not score:
-            return 0
+            return "tie"
         if score[0].lower() == "a":
-            return 1
+            return models[0]
         elif score[0].lower() == "b":
-            return -1
+            return models[1]
         else:
-            return 0
+            return "tie"
     except Exception as e:
-        print(f"Error in ranker_postprocess: {output}")
-        return 0
+        print(f"Error in ranker_postprocess: {output}\n\n{e}")
+        return "tie"
 
+
+def convert_scores(scores: List[str], original_models: List[str]) -> List[int]:
+    return [1 if score == original_models[0] else -1 if score == original_models[1] else 0 for score in scores]
 
 def rank_vibes(
     vibes: List[str],
     df: pd.DataFrame,
     models: List[str],
     single_position_rank: bool = False,
-):
+) -> pd.DataFrame:
     """
     Ranks the two model outputs across the given vibes (axes) using LOTUS ranking prompts.
     """
     judge_systems_prompt = """You are a fair and unbiased judge. Your task is to compare the outputs of two language models (A and B) on a given propoery. Which repose better aligns more with the given property, A, B, or equal?
 
-Your sole focus is to determine which response better aligns with the given property, NOT how good or bad the response is. Avoid any position bias and remain as objective as possible. Consider what the property means and how it applies to the outputs. Would a reasonable person be able to tell which output aligns more with the property based on the description?
+Your sole focus is to determine which response better aligns with the given property, NOT how good or bad the response is. Do NOT let the position of the model outputs influence your decision and remain as objective as possible. Consider what the property means and how it applies to the outputs. Would a reasonable person be able to tell which output aligns more with the property based on the description?
 
 Instructions:
 	•	If Response A aligns with the property more than Response B, respond with "A".
-  •	If Response B aligns with the property more than Response A, respond with "B".
+    •	If Response B aligns with the property more than Response A, respond with "B".
 	•	If the responses are roughly equal on the property, respond with "equal".
 	•	If the property does not apply to these outputs (e.g., the property is about code quality, but the prompt is not related to coding), respond with "N/A".
 	•	If you are unsure about the meaning of the property, respond with "unsure". Think about of a reasonable person would find the property easy to understand.
@@ -84,11 +87,30 @@ Remember to be as objective as possible and strictly adhere to the response form
 
     # drop any duplicate columns
     vibe_df = vibe_df.loc[:, ~vibe_df.columns.duplicated()]
-    vibe_df["ranker_inputs"] = vibe_df.apply(
-        lambda row: f"\nProperty: {row['vibe']}\n\nUser prompt:\n{row['question']}\n\nResponse A:\n{row[models[0]]}\n\nResponse B:\n{row[models[1]]}\n\nProperty (restated): {row['vibe']}",
-        axis=1,
-    )
+    if single_position_rank:
+        # randomly shuffle the models for each row 
+        rand_models = []
+        for i in range(len(vibe_df)):
+            np.random.seed(i)
+            rand_models.append(list(np.random.permutation(models)))
+        np.random.seed(42)
+        print(rand_models[:5])
+        vibe_df["score_pos_model"] = rand_models
+        ranker_inputs = []
+        for i in range(len(vibe_df)):
+            ranker_inputs.append(f"\nProperty: {vibe_df['vibe'][i]}\n\nUser prompt:\n{vibe_df['question'][i]}\n\nResponse A:\n{vibe_df[rand_models[i][0]][i]}\n\nResponse B:\n{vibe_df[rand_models[i][1]][i]}\n\nProperty (restated): {vibe_df['vibe'][i]}")
+        vibe_df["ranker_inputs"] = ranker_inputs
+    # vibe_df["ranker_inputs"] = vibe_df.apply(
+    #     lambda row: f"\nProperty: {row['vibe']}\n\nUser prompt:\n{row['question']}\n\nResponse A:\n{row[models[0]]}\n\nResponse B:\n{row[models[1]]}\n\nProperty (restated): {row['vibe']}",
+    #     axis=1,
+    # )
+
     if not single_position_rank:
+        vibe_df["score_pos_model"] = [models for _ in range(len(vibe_df))]
+        vibe_df["ranker_inputs"] = vibe_df.apply(
+            lambda row: f"Property: {row['vibe']}\nUser prompt:\n{row['question']}\n\nResponse A:\n{row[models[0]]}\n\nResponse B:\n{row[models[1]]}\n\nProperty (restated): {row['vibe']}",
+            axis=1,
+        )
         vibe_df["ranker_inputs_reversed"] = vibe_df.apply(
             lambda row: f"Property: {row['vibe']}\nUser prompt:\n{row['question']}\n\nResponse A:\n{row[models[1]]}\n\nResponse B:\n{row[models[0]]}\n\nProperty (restated): {row['vibe']}",
             axis=1,
@@ -113,7 +135,8 @@ Remember to be as objective as possible and strictly adhere to the response form
         on=["vibe", "question", models[0], models[1], "preference"],
         how="left",
     )
-    vibe_df["ranker_output_1"] = vibe_df["ranker_output_1"].apply(ranker_postprocess)
+    vibe_df["ranker_output_1"] = [str(ranker_postprocess(output, model)) for output, model in zip(vibe_df["ranker_output_1"], vibe_df["score_pos_model"])]
+
     if not single_position_rank:
         ranker_2 = vibe_df.sem_map(
             ranker_prompt2, return_raw_outputs=True, suffix="ranker_output_2"
@@ -125,19 +148,22 @@ Remember to be as objective as possible and strictly adhere to the response form
             on=["question", models[0], models[1], "preference"],
             how="left",
         )
-        vibe_df["ranker_output_2"] = vibe_df["ranker_output_2"].apply(
-            ranker_postprocess
-        )
+        vibe_df["ranker_output_2"] = [ranker_postprocess(output, model) for output, model in zip(vibe_df["ranker_output_2"], vibe_df["score_pos_model"])]
+        vibe_df["score"] = vibe_df["ranker_output_1"].apply(lambda x: 1 if x == models[0] else -1 if x == models[1] else 0)
+        vibe_df["score_reversed"] = vibe_df["ranker_output_2"].apply(lambda x: 1 if x == models[0] else -1 if x == models[1] else 0)
         vibe_df["position_matters"] = (
-            vibe_df["ranker_output_1"] != -1 * vibe_df["ranker_output_2"]
+            (vibe_df["score"] != -1 * vibe_df["score_reversed"]) | 
+            (vibe_df["score"] == 0) | 
+            (vibe_df["score_reversed"] == 0)
         )
         vibe_df["score"] = vibe_df.apply(
-            lambda row: row["ranker_output_1"] if not row["position_matters"] else 0,
+            lambda row: row["score"] if not row["position_matters"] else 0,
             axis=1,
         )
         wandb.summary["prop_position_collisions"] = vibe_df["position_matters"].mean()
     else:
-        vibe_df["score"] = vibe_df["ranker_output_1"]
+        vibe_df["score_label"] = vibe_df["ranker_output_1"]
+        vibe_df["score"] = vibe_df["score_label"].apply(lambda x: 1 if x == models[0] else (-1 if x == models[1] else 0))
 
     return vibe_df
 
@@ -149,7 +175,7 @@ import numpy as np
 def rank_vibes_embedding(vibes: List[str], 
                          df: pd.DataFrame, 
                          models: List[str],
-                         embedding_model: str = "text-embedding-3-small"):
+                         embedding_model: str = "text-embedding-3-small") -> pd.DataFrame:
     """
     Ranks the two model outputs across the given vibes (axes) using embedding similarity.
     This is much cheaper than the LLM ranker, but way less accurate. Maybe we can train an MLP with some LLM labels.

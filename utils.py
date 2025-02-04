@@ -14,9 +14,12 @@ from sklearn.utils import shuffle
 
 
 def train_and_evaluate_model(
-    X: np.ndarray,
-    y: np.ndarray,
-    feature_names: List[str],
+    # X: np.ndarray,
+    # y: np.ndarray,
+    # feature_names: List[str],
+    vibe_df: pd.DataFrame,
+    models: List[str],
+    label: str,
     split_train_test: bool = True,
     solver: str = "elasticnet",
     n_splits: int = 5,
@@ -33,34 +36,43 @@ def train_and_evaluate_model(
         bootstrap_iters: Number of bootstrap iterations (0 for no bootstrapping)
         n_splits: Number of random train/test splits to average over
     """
-    # Configure model based on solver type
-    if solver == "standard":
-        model = LogisticRegression(penalty="l2", random_state=42)
-    elif solver == "lasso":
-        model = LogisticRegression(penalty="l1", solver="liblinear", random_state=42)
-    elif solver == "elasticnet":
-        model = LogisticRegression(
-            penalty="elasticnet", solver="saga", l1_ratio=0.5, random_state=42
-        )
+    feature_df, X, y_pref, y_identity = get_feature_df(vibe_df, models, flip_identity=True)
+    if label == "preference":
+        y = y_pref
+    elif label == "identity":
+        y = y_identity
     else:
-        raise ValueError("solver must be one of: 'standard', 'lasso', 'elasticnet'")
+        raise ValueError("label must be one of: 'preference', 'identity'")
+    feature_names = feature_df.columns
 
     # Initialize arrays to store results across splits
     split_accuracies = []
     split_coefs = []
+    models = []  # Move this outside the splits loop
 
     for split in range(n_splits):
         # Split and train
         if split_train_test:
             X_train, X_test, y_train, y_test = train_test_split(
-                X, y, test_size=0.5, random_state=42 + split
+                X, y, test_size=0.5, random_state=42 + split, stratify=y
             )
         else:
             print("Using all data for training and testing")
             X_train, y_train = shuffle(X, y, random_state=42 + split)
             X_test, y_test = X, y
 
+        # Create a new model instance for each split
+        if solver == "standard":
+            model = LogisticRegression(penalty="l2", random_state=42)
+        elif solver == "lasso":
+            model = LogisticRegression(penalty="l1", solver="liblinear", random_state=42)
+        elif solver == "elasticnet":
+            model = LogisticRegression(
+                penalty="elasticnet", solver="saga", l1_ratio=0.5, random_state=42
+            )
+
         model.fit(X_train, y_train)
+        models.append(model)
 
         # Store results for this split
         split_accuracies.append(accuracy_score(y_test, model.predict(X_test)))
@@ -69,6 +81,18 @@ def train_and_evaluate_model(
     # Average results across splits
     accuracy = np.mean(split_accuracies)
     model.coef_ = np.mean(split_coefs, axis=0).reshape(1, -1)
+
+    # get model predictions over each model, store whether is was correct 
+    all_predictions = []
+    for m in models:
+        predictions = m.predict(X)
+        correct = (predictions == y)
+        feature_df_copy = feature_df.copy()
+        feature_df_copy["correct"] = correct
+        all_predictions.append(feature_df_copy)
+    all_predictions = pd.concat(all_predictions)
+    all_predictions = all_predictions.reset_index()
+    avg_correct = all_predictions.groupby("conversation_id")["correct"].mean().to_frame()
 
     if n_splits > 1:
         acc_std = np.std(split_accuracies)
@@ -79,62 +103,74 @@ def train_and_evaluate_model(
         acc_std = 0
         print(f"Accuracy ({solver}): {accuracy:.3f}")
 
-    # Calculate p-values
-    X_with_intercept = np.column_stack([np.ones(len(X_train)), X_train])
-    predictions = model.predict(X_train)
-    mse = np.sum((predictions - y_train) ** 2) / (
-        len(y_train) - X_with_intercept.shape[1]
-    )
-    var_covar_matrix = mse * np.linalg.inv(np.dot(X_with_intercept.T, X_with_intercept))
-    standard_errors = np.sqrt(np.diag(var_covar_matrix))[1:]
-    z_scores = model.coef_[0] / standard_errors
-    p_values = 2 * (1 - stats.norm.cdf(abs(z_scores)))
+    # Calculate feature importance metrics based on solver type
+    if solver == "standard":
+        # Standard p-value calculation is fine for L2
+        X_with_intercept = np.column_stack([np.ones(len(X_train)), X_train])
+        predictions = model.predict(X_train)
+        mse = np.sum((predictions - y_train) ** 2) / (
+            len(y_train) - X_with_intercept.shape[1]
+        )
+        var_covar_matrix = mse * np.linalg.inv(np.dot(X_with_intercept.T, X_with_intercept))
+        standard_errors = np.sqrt(np.diag(var_covar_matrix))[1:]
+        z_scores = model.coef_[0] / standard_errors
+        p_values = 2 * (1 - stats.norm.cdf(abs(z_scores)))
+    else:
+        # For Lasso and Elasticnet, use coefficient stability across splits
+        coef_nonzero = np.mean([np.abs(c) > 1e-10 for c in split_coefs], axis=0)
+        p_values = 1 - coef_nonzero  # Proportion of times feature was selected
 
-    # Create dataframe with feature names, coefficients, and p-values
-    coef_df = pd.DataFrame(
-        {
-            "vibe": feature_names,
-            "coef": model.coef_[0],
-            "p_value": p_values,
-        }
-    )
+    # Create dataframe with feature names, coefficients, and importance metrics
+    coef_df = pd.DataFrame({
+        "vibe": feature_names,
+        "coef": model.coef_[0],
+        "selection_frequency": coef_nonzero if solver != "standard" else 1.0,
+        "p_value": p_values,
+    })
 
-    # If using multiple splits, add split-based confidence intervals
+    # Add split-based confidence intervals
     if n_splits > 1:
         coef_df["coef_std"] = np.std(split_coefs, axis=0)
         coef_df["coef_lower_split"] = model.coef_[0] - 1.96 * coef_df["coef_std"]
         coef_df["coef_upper_split"] = model.coef_[0] + 1.96 * coef_df["coef_std"]
+        
+        # Add stability metric
+        coef_df["stability"] = 1 - (coef_df["coef_std"] / np.abs(coef_df["coef"]))
+        
+        # Sort by appropriate importance metric
+        if solver == "standard":
+            coef_df = coef_df.sort_values("p_value")
+        else:
+            coef_df = coef_df.sort_values(
+                ["selection_frequency", "stability", "coef_std"],
+                ascending=[False, False, True]
+            )
 
-    return model, coef_df, accuracy, acc_std
+    return model, coef_df, accuracy, acc_std, avg_correct
 
 
-def get_feature_df(vibe_df: pd.DataFrame):
+def get_feature_df(vibe_df: pd.DataFrame, models: List[str], flip_identity: bool = False):
     """
     Given a vibe_df with "score" columns pivoted by "vibe", construct X, y
     arrays for preference and identity classification.
     """
+
+    orig_df = vibe_df.drop_duplicates(subset="conversation_id")
     # Pivot to create wide-format scores for each vibe
     feature_df = pd.pivot_table(
-        vibe_df, values="score", index=vibe_df.index, columns="vibe", fill_value=0
+        vibe_df, values="score", index="conversation_id", columns="vibe", fill_value=0
     )
-    print(feature_df.columns)
+    y_pref = orig_df["preference_feature"].to_numpy()
+    y_identity = orig_df["score_pos_model"].apply(lambda x: 1 if models[0] == x[0] else -1).to_numpy()
 
-    feature_df_1 = feature_df.copy()
-    feature_df_2 = -1 * feature_df.copy()
+    X_pref = feature_df.to_numpy()
 
-    # Preference data
-    X_pref = np.vstack([feature_df_1.to_numpy(), feature_df_2.to_numpy()])
-    y_pref = np.concatenate(
-        [
-            vibe_df["preference_feature"][: len(feature_df)].to_numpy(),
-            -1 * vibe_df["preference_feature"][: len(feature_df)].to_numpy(),
-        ]
-    )
-
-    # Model identity data
-    y_identity = np.concatenate(
-        [np.ones(len(feature_df_1)), -1 * np.ones(len(feature_df_2))]
-    )
+    # if y_identity is all 1, copy X_pref and negate it
+    if flip_identity and np.all(y_identity == 1):
+        X_pref = np.vstack([X_pref, -1 * X_pref.copy()])
+        y_identity = np.concatenate([y_identity, -1 * y_identity])
+        y_pref = np.concatenate([y_pref, -1 * y_pref])
+        feature_df = pd.concat([feature_df, feature_df.copy()])
 
     return feature_df, X_pref, y_pref, y_identity
 

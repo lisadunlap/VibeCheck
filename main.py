@@ -65,6 +65,7 @@ def vibe_discovery(
     """
     from components.propose import propose_vibes
 
+    models = list(config.models)
     # Create preference distribution plot
     pref_dist = df["preference"].value_counts()
     pref_dist_plot = go.Figure(
@@ -84,7 +85,7 @@ def vibe_discovery(
     # Propose vibes
     vibes = propose_vibes(
         df,
-        config.models,
+        models,
         num_proposal_samples=config.proposer.num_samples,
         num_final_vibes=config.num_final_vibes,
         current_vibes=current_vibes,
@@ -119,6 +120,7 @@ def vibe_validation(
     # Change model for ranking
     lm = LM(model=config.ranker.model, cache=cache)
     lotus.settings.configure(lm=lm, enable_cache=True)
+    models = list(config.models)
 
     # Rank vibes (list of strings)
     vibes_to_rank = vibes[:3] if config.test else vibes
@@ -127,21 +129,23 @@ def vibe_validation(
         vibe_df = rank_vibes_embedding(
             vibes_to_rank, 
             df, 
-            config.models, 
+            models, 
             config.ranker.embedding_model)
     else:
         vibe_df = rank_vibes(
             vibes_to_rank,
             df,
-            config.models,
+            models,
             single_position_rank=config.ranker.single_position_rank,
         )
+    print(f"vibe_df length: {len(vibe_df)}")
 
     # Compute preference alignment
     vibe_df["preference_feature"] = vibe_df["preference"].apply(
-        lambda x: get_pref_score(x, config.models)
+        lambda x: get_pref_score(x, models)
     )
     vibe_df["pref_score"] = vibe_df["score"] * vibe_df["preference_feature"]
+    print(f"vibe_df length pt 2: {len(vibe_df)}")
 
     wandb.log({"Vibe Scoring/ranker_results": wandb.Table(dataframe=vibe_df)})
     vibe_df.to_csv(os.path.join(output_dir, "vibe_df.csv"), index=False)
@@ -158,7 +162,7 @@ def vibe_validation(
         x_cols=["score", "pref_score"],
         titles=("Model Identity", "Preference Prediction"),
         main_title="Vibe Heuristics",
-        models=config.models,
+        models=models,
     )
     wandb.log(
         {
@@ -172,13 +176,15 @@ def vibe_validation(
     )
 
     # Filter vibes with low model differentiation or preference alignment
-    filtered_vibe_df = vibe_df[
-        (vibe_df["score"].abs() > 0.05) & (vibe_df["pref_score"].abs() > 0.05)
-    ]
-    print(
-        f"Retained {len(filtered_vibe_df.drop_duplicates('vibe'))} vibes with non-trivial separation/preference."
-    )
-    print("Remaining vibes:\n" + "\n".join(filtered_vibe_df["vibe"].unique()))
+    filtered_vibes = agg_df[(agg_df["score"].abs() > config.filter.min_score_diff) & (agg_df["pref_score"].abs() > config.filter.min_pref_score_diff)]["vibe"].tolist()
+    filtered_vibe_df = vibe_df[vibe_df["vibe"].isin(filtered_vibes)]
+    if len(filtered_vibes) < len(agg_df):
+        print("Removed vibes for low model differentiation or preference alignment:")
+        for vibe in set(agg_df['vibe'].tolist()) - set(filtered_vibes):
+            print(f"* {vibe}")
+    print("Remaining vibes:")
+    print("* " + "\n* ".join(filtered_vibe_df["vibe"].unique()))
+    print("--------------------------------")
 
     return {
         "vibe_df": filtered_vibe_df,
@@ -188,7 +194,7 @@ def vibe_validation(
 
 
 def train_preference_prediction(
-    vibe_df: pd.DataFrame, config: OmegaConf, output_dir: str
+    vibe_df: pd.DataFrame, config: OmegaConf, output_dir: str, models: List[str]
 ):
     """
     Train models and create all analysis plots.
@@ -203,11 +209,10 @@ def train_preference_prediction(
         create_vibe_correlation_plot,
     )
 
-    feature_df, X_pref, y_pref, y_identity = get_feature_df(vibe_df)
     preference_results = train_and_evaluate_model(
-        X_pref,
-        y_pref,
-        feature_df.columns,
+        vibe_df,
+        models,
+        "preference",
         split_train_test=not config.no_holdout_set,
         solver=config.ranker.solver,
     )
@@ -216,15 +221,16 @@ def train_preference_prediction(
         preference_coef_df,
         preference_accuracy_test,
         preference_acc_std,
+        preference_avg_correct,
     ) = preference_results
     identity_results = train_and_evaluate_model(
-        X_pref,
-        y_identity,
-        feature_df.columns,
+        vibe_df,
+        models,
+        "identity",
         split_train_test=not config.no_holdout_set,
         solver=config.ranker.solver,
     )
-    identity_model, identity_coef_df, identity_accuracy_test, identity_acc_std = (
+    identity_model, identity_coef_df, identity_accuracy_test, identity_acc_std, identity_avg_correct = (
         identity_results
     )
     metrics = {
@@ -243,25 +249,28 @@ def train_preference_prediction(
         x_cols=["coef_modelID", "coef_preference"],
         titles=("Model Identity", "Preference Prediction"),
         main_title="Vibe Model Coefficients",
-        models=config.models,
+        models=models,
         error_cols=["coef_std_modelID", "coef_std_preference"],
     )
 
     # Create correlation plot (how much the scores overlap)
-    corr_plot = create_vibe_correlation_plot(vibe_df, config.models)
+    corr_plot = create_vibe_correlation_plot(vibe_df, models)
+    coef_plot.write_html(os.path.join(output_dir, "model_vibe_coef_plot.html"))
+    coef_df.to_csv(os.path.join(output_dir, "vibecheck_coefficients.csv"), index=False)
+    corr_plot.write_html(os.path.join(output_dir, "vibe_correlations.html"))
 
-    # Log and save results
+    df = vibe_df.drop_duplicates("conversation_id").copy()
+    df.loc[:, "preference_prediction"] = preference_avg_correct
+    df.loc[:, "identity_prediction"] = identity_avg_correct
+
     wandb.log(
         {
             "Vibe Plots/model_vibe_coef_plot": wandb.Html(coef_plot.to_html()),
             "coefficient_data": wandb.Table(dataframe=coef_df),
             "Vibe Scoring/vibe_correlations": wandb.Html(corr_plot.to_html()),
+            "Vibe Scoring/df_answers": wandb.Table(dataframe=df),
         }
     )
-
-    coef_plot.write_html(os.path.join(output_dir, "model_vibe_coef_plot.html"))
-    coef_df.to_csv(os.path.join(output_dir, "vibecheck_coefficients.csv"), index=False)
-    corr_plot.write_html(os.path.join(output_dir, "vibe_correlations.html"))
 
     return {
         "preference_model": preference_model,
@@ -270,6 +279,7 @@ def train_preference_prediction(
         "coef_plot": coef_plot,
         "corr_plot": corr_plot,
         "metrics": metrics,
+        "df_answers": df,
     }
 
 
@@ -288,15 +298,16 @@ def main(config):
     from lotus.cache import CacheConfig, CacheType, CacheFactory
     import pandas as pd
 
+    models = list(config.models)
     # Initialize wandb
     wandb.init(
         project=config.project_name,
-        name=f"{config.models[0]}_vs_{config.models[1]}",
+        name=f"{models[0]}_vs_{models[1]}",
         save_code=True,
     )
 
     # Setup output directory
-    output_dir = f"{config.output_dir}/{config.data_path.split('/')[-1].replace('.csv', '')}_{config.models[0]}_vs_{config.models[1]}"
+    output_dir = f"{config.output_dir}/{config.data_path.split('/')[-1].replace('.csv', '')}_{models[0]}_vs_{models[1]}"
     os.makedirs(output_dir, exist_ok=True)
 
     # Initialize LOTUS
@@ -314,12 +325,14 @@ def main(config):
         raise ValueError(
             "Preference column not found in dataframe. Run get_preference_labels.py first"
         )
-    if not all([c in df.columns for c in config.models + ["question"]]):
+    if not all([c in df.columns for c in models + ["question"]]):
         raise ValueError(
-            f"Models {config.models} or question column not found in dataframe."
+            f"Models {models} or question column not found in dataframe."
         )
 
-    df = df[df["preference"].isin(config.models)].reset_index(drop=True)
+    df = df[df["preference"].isin(models)].reset_index(drop=True)
+    # set conversation_id to be the index of the question, models[0], models[1]
+    df["conversation_id"] = df.index
     # Log dataset info
     wandb.summary.update(
         {
@@ -369,7 +382,7 @@ def main(config):
 
         # 3. Train preference prediction
         train_results = train_preference_prediction(
-            ranking_df_iteration, config, output_dir
+            ranking_df_iteration, config, output_dir, models
         )
         wandb.log({"iteration": iteration, **train_results["metrics"]})
         wandb.log({"vibes_each_iteration": wandb.Table(dataframe=pd.DataFrame(vibes_each_iteration))})
@@ -392,7 +405,7 @@ def main(config):
         print("\nLaunching Gradio app...")
         app = create_gradio_app(
             rank_results["vibe_df"],
-            config.models,
+            models,
             train_results["coef_df"],
             train_results["corr_plot"],
             vibe_question_types,
