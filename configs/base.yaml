@@ -21,7 +21,7 @@ no_holdout_set: false
 
 gradio: false # launch a Gradio interface after analysis for interactive exploration of the results.
 
-initial_vibes: ["friendly tone", "use of exclamation points"] # List of initial vibes to use in analysis. If empty, vibes will be proposed automatically.
+initial_vibes: [] # List of initial vibes to use in analysis. If empty, vibes will be proposed automatically.
 
 iterations: 1 # Number of iterations to run the analysis. 
 
@@ -29,6 +29,9 @@ proposer:
   # Number of samples to use when proposing vibes. Higher numbers will give more comprehensive but slower results.
   num_samples: 30
   model: "gpt-4o"
+  num_vibes_per_iteration: 5 # Number of vibes to propose per iteration.
+  shuffle_positions: true # If true, shuffles the positions of the models in the prompt for finding vibes.
+  batch_size: 5 # Number of samples to use for each batch (LLM call) in the vibe proposal.
 
 # Maximum number of vibes to use in final analysis. This limits the number of 
 # behavioral dimensions that will be analyzed.

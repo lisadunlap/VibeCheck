@@ -7,34 +7,30 @@ from scipy import stats
 from sklearn.linear_model import LogisticRegression
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import accuracy_score
-from typing import List
+from typing import List, Tuple
 from plotly.subplots import make_subplots
 from plotly import graph_objects as go
 from sklearn.utils import shuffle
 
 
 def train_and_evaluate_model(
-    # X: np.ndarray,
-    # y: np.ndarray,
-    # feature_names: List[str],
     vibe_df: pd.DataFrame,
     models: List[str],
     label: str,
     split_train_test: bool = True,
     solver: str = "elasticnet",
-    n_splits: int = 5,
+    n_bootstrap: int = 1000,
 ):
     """
-    Train a logistic regression model on (X, y) and compute accuracy and p-values for each feature.
+    Train a logistic regression model using bootstrap resampling to compute accuracy and p-values.
 
     Args:
-        X: Feature matrix
-        y: Target values
-        feature_names: Names of features
+        vibe_df: DataFrame containing the vibe scores
+        models: List of model names
+        label: Target label ('preference' or 'identity')
         split_train_test: Whether to split data into train/test sets
-        solver: Type of regularization to use ('standard', 'lasso', or 'elasticnet')
-        bootstrap_iters: Number of bootstrap iterations (0 for no bootstrapping)
-        n_splits: Number of random train/test splits to average over
+        solver: Type of regularization ('standard', 'lasso', or 'elasticnet')
+        n_bootstrap: Number of bootstrap iterations
     """
     feature_df, X, y_pref, y_identity = get_feature_df(vibe_df, models, flip_identity=True)
     if label == "preference":
@@ -45,23 +41,28 @@ def train_and_evaluate_model(
         raise ValueError("label must be one of: 'preference', 'identity'")
     feature_names = feature_df.columns
 
-    # Initialize arrays to store results across splits
-    split_accuracies = []
-    split_coefs = []
-    models = []  # Move this outside the splits loop
+    # Initialize arrays to store bootstrap results
+    bootstrap_accuracies = []
+    bootstrap_coefs = []
+    models = []
+    n_samples = len(X)
 
-    for split in range(n_splits):
-        # Split and train
+    for _ in range(n_bootstrap):
+        # Create bootstrap sample
+        bootstrap_indices = np.random.choice(n_samples, size=n_samples, replace=True)
+        X_boot = X[bootstrap_indices]
+        y_boot = y[bootstrap_indices]
+
+        # Split bootstrap sample if requested
         if split_train_test:
             X_train, X_test, y_train, y_test = train_test_split(
-                X, y, test_size=0.5, random_state=42 + split, stratify=y
+                X_boot, y_boot, test_size=0.5, random_state=42, stratify=y_boot
             )
         else:
-            print("Using all data for training and testing")
-            X_train, y_train = shuffle(X, y, random_state=42 + split)
-            X_test, y_test = X, y
+            X_train, y_train = X_boot, y_boot
+            X_test, y_test = X, y  # Use full dataset for testing
 
-        # Create a new model instance for each split
+        # Create and train model
         if solver == "standard":
             model = LogisticRegression(penalty="l2", random_state=42)
         elif solver == "lasso":
@@ -74,15 +75,23 @@ def train_and_evaluate_model(
         model.fit(X_train, y_train)
         models.append(model)
 
-        # Store results for this split
-        split_accuracies.append(accuracy_score(y_test, model.predict(X_test)))
-        split_coefs.append(model.coef_[0])
+        # Store results for this bootstrap iteration
+        bootstrap_accuracies.append(accuracy_score(y_test, model.predict(X_test)))
+        bootstrap_coefs.append(model.coef_[0])
 
-    # Average results across splits
-    accuracy = np.mean(split_accuracies)
-    model.coef_ = np.mean(split_coefs, axis=0).reshape(1, -1)
+    # Calculate confidence intervals using percentiles
+    accuracy = np.mean(bootstrap_accuracies)
+    acc_std = np.std(bootstrap_accuracies)
+    acc_ci = np.percentile(bootstrap_accuracies, [2.5, 97.5])
+    
+    # Average coefficients and calculate their confidence intervals
+    mean_coefs = np.mean(bootstrap_coefs, axis=0)
+    coef_ci = np.percentile(bootstrap_coefs, [2.5, 97.5], axis=0)
+    
+    # Set the final model coefficients to the bootstrap mean
+    model.coef_ = mean_coefs.reshape(1, -1)
 
-    # get model predictions over each model, store whether is was correct 
+    # Get model predictions and correctness
     all_predictions = []
     for m in models:
         predictions = m.predict(X)
@@ -94,57 +103,41 @@ def train_and_evaluate_model(
     all_predictions = all_predictions.reset_index()
     avg_correct = all_predictions.groupby("conversation_id")["correct"].mean().to_frame()
 
-    if n_splits > 1:
-        acc_std = np.std(split_accuracies)
-        coef_std = np.std(split_coefs, axis=0)
-        print(f"Accuracy ({solver}): {accuracy:.3f} ± {acc_std:.3f}")
-        print(f"Coefficients ({solver}): {model.coef_[0]} ± {coef_std}")
-    else:
-        acc_std = 0
-        print(f"Accuracy ({solver}): {accuracy:.3f}")
+    print(f"Accuracy ({solver}): {accuracy:.3f} ± {acc_std:.3f}")
+    print(f"95% CI: [{acc_ci[0]:.3f}, {acc_ci[1]:.3f}]")
 
-    # Calculate feature importance metrics based on solver type
+    # Calculate feature importance metrics
     if solver == "standard":
-        # Standard p-value calculation is fine for L2
-        X_with_intercept = np.column_stack([np.ones(len(X_train)), X_train])
-        predictions = model.predict(X_train)
-        mse = np.sum((predictions - y_train) ** 2) / (
-            len(y_train) - X_with_intercept.shape[1]
-        )
-        var_covar_matrix = mse * np.linalg.inv(np.dot(X_with_intercept.T, X_with_intercept))
-        standard_errors = np.sqrt(np.diag(var_covar_matrix))[1:]
-        z_scores = model.coef_[0] / standard_errors
+        # Use bootstrap distribution for p-values
+        z_scores = mean_coefs / np.std(bootstrap_coefs, axis=0)
         p_values = 2 * (1 - stats.norm.cdf(abs(z_scores)))
     else:
-        # For Lasso and Elasticnet, use coefficient stability across splits
-        coef_nonzero = np.mean([np.abs(c) > 1e-10 for c in split_coefs], axis=0)
-        p_values = 1 - coef_nonzero  # Proportion of times feature was selected
+        # For Lasso and Elasticnet, use coefficient stability across bootstrap samples
+        coef_nonzero = np.mean([np.abs(c) > 1e-10 for c in bootstrap_coefs], axis=0)
+        p_values = 1 - coef_nonzero
 
-    # Create dataframe with feature names, coefficients, and importance metrics
+    # Create results dataframe
     coef_df = pd.DataFrame({
         "vibe": feature_names,
-        "coef": model.coef_[0],
+        "coef": mean_coefs,
         "selection_frequency": coef_nonzero if solver != "standard" else 1.0,
         "p_value": p_values,
+        "coef_std": np.std(bootstrap_coefs, axis=0),
+        "coef_lower_ci": coef_ci[0],
+        "coef_upper_ci": coef_ci[1]
     })
 
-    # Add split-based confidence intervals
-    if n_splits > 1:
-        coef_df["coef_std"] = np.std(split_coefs, axis=0)
-        coef_df["coef_lower_split"] = model.coef_[0] - 1.96 * coef_df["coef_std"]
-        coef_df["coef_upper_split"] = model.coef_[0] + 1.96 * coef_df["coef_std"]
-        
-        # Add stability metric
-        coef_df["stability"] = 1 - (coef_df["coef_std"] / np.abs(coef_df["coef"]))
-        
-        # Sort by appropriate importance metric
-        if solver == "standard":
-            coef_df = coef_df.sort_values("p_value")
-        else:
-            coef_df = coef_df.sort_values(
-                ["selection_frequency", "stability", "coef_std"],
-                ascending=[False, False, True]
-            )
+    # Add stability metric
+    coef_df["stability"] = 1 - (coef_df["coef_std"] / np.abs(coef_df["coef"]))
+    
+    # Sort by appropriate importance metric
+    if solver == "standard":
+        coef_df = coef_df.sort_values("p_value")
+    else:
+        coef_df = coef_df.sort_values(
+            ["selection_frequency", "stability", "coef_std"],
+            ascending=[False, False, True]
+        )
 
     return model, coef_df, accuracy, acc_std, avg_correct
 
@@ -203,14 +196,14 @@ def parse_vibe_description(vibe_text: str) -> pd.Series:
 
 
 def create_side_by_side_plot(
-    df,
-    y_col,
-    x_cols,
-    titles,
-    main_title,
-    models,
-    error_cols=None,
-    colors=("#2ecc71", "#3498db"),
+    df: pd.DataFrame,
+    y_col: str,
+    x_cols: List[str],
+    titles: List[str],
+    main_title: str,
+    models: List[str],
+    error_cols: List[str] = None,
+    colors: Tuple[str, str] = ("#2ecc71", "#3498db"),
 ):
     """Creates a side-by-side horizontal bar plot with two subplots.
 

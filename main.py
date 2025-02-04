@@ -63,7 +63,7 @@ def vibe_discovery(
     Returns:
         dict: Contains vibes_df and preference distribution plot
     """
-    from components.propose import propose_vibes
+    from components.propose import VibeProposerExtended
 
     models = list(config.models)
     # Create preference distribution plot
@@ -83,13 +83,13 @@ def vibe_discovery(
     pref_dist_plot.write_html(os.path.join(output_dir, "preference_distribution.html"))
 
     # Propose vibes
-    vibes = propose_vibes(
-        df,
+    vibes, proposer_results = VibeProposerExtended(
         models,
-        num_proposal_samples=config.proposer.num_samples,
-        num_final_vibes=config.num_final_vibes,
-        current_vibes=current_vibes,
-    )
+        config,
+    ).propose(df, current_vibes=current_vibes)
+    print("Proposed Vibes:")
+    print("* " + "\n* ".join(vibes))
+    print("--------------------------------")
 
     vibes_df = pd.DataFrame({"vibes": vibes})
     wandb.log({"vibes": wandb.Table(dataframe=vibes_df)})
@@ -138,14 +138,12 @@ def vibe_validation(
             models,
             single_position_rank=config.ranker.single_position_rank,
         )
-    print(f"vibe_df length: {len(vibe_df)}")
 
     # Compute preference alignment
     vibe_df["preference_feature"] = vibe_df["preference"].apply(
         lambda x: get_pref_score(x, models)
     )
     vibe_df["pref_score"] = vibe_df["score"] * vibe_df["preference_feature"]
-    print(f"vibe_df length pt 2: {len(vibe_df)}")
 
     wandb.log({"Vibe Scoring/ranker_results": wandb.Table(dataframe=vibe_df)})
     vibe_df.to_csv(os.path.join(output_dir, "vibe_df.csv"), index=False)
