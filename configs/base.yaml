@@ -1,6 +1,7 @@
 # Path to CSV file containing model outputs. Must include columns for model responses 
 # and a 'preference' column indicating which model output was preferred.
 data_path: null  # Required argument
+num_samples: null 
 
 wandb: true # If true, logs results to Weights & Biases.
 

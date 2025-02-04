@@ -2,12 +2,9 @@ from typing import List
 import pandas as pd
 import wandb
 import re
-
+from omegaconf import OmegaConf
 
 def ranker_postprocess(output: str, models: List[str]) -> str:
-    """
-    Postprocess the ranker's output to extract whether model A is favored (1), B is favored (-1), or tie/NA (0).
-    """
     try:
         output = output.replace("Output ", "").replace("output ", "")
         output = re.sub(r"[#*]", "", output)
@@ -29,6 +26,141 @@ def ranker_postprocess(output: str, models: List[str]) -> str:
 def convert_scores(scores: List[str], original_models: List[str]) -> List[int]:
     return [1 if score == original_models[0] else -1 if score == original_models[1] else 0 for score in scores]
 
+# class VibeRankerBase:
+#     """
+#     A class for scoring vibes. 
+#     """
+#     from omegaconf import OmegaConf
+#     def __init__(self, config: OmegaConf):
+#         self.config = config
+
+#     def score(self, vibes: List[str], df: pd.DataFrame, models: List[str]) -> pd.DataFrame:
+#         """
+#         Scores the given vibe.
+#         """
+#         pass
+
+#     def score_single_vibe(self, vibe: str, df: pd.DataFrame, models: List[str]) -> pd.DataFrame:
+#         """
+#         Scores the given vibe.
+#         """
+#         pass
+
+# class VibeRanker(VibeRankerBase):
+#     """
+#     Uses LLM to rate each response pair as either A, B, or equal.
+#     """
+#     from components.prompts.ranker_prompts import judge_prompt
+#     def __init__(self, config: OmegaConf):
+#         super().__init__(config)
+#         self.single_position_rank = config["ranker"].get("single_position_rank", False)
+        
+#     def score(self, vibes: List[str], df: pd.DataFrame, models: List[str]) -> pd.DataFrame:
+#         """
+#         Scores the given vibe.
+#         """
+#         pass
+
+def build_vibe_df(vibes: List[str], df: pd.DataFrame) -> pd.DataFrame:
+    """Helper: Build vibe_df by concatenating df copies for each vibe."""
+    vibe_dfs = []
+    for vibe in vibes:
+        vibe_df = df.copy()
+        vibe_df["vibe"] = vibe
+        vibe_dfs.append(vibe_df)
+
+    combined = pd.concat(vibe_dfs).reset_index(drop=True)
+    # Drop duplicate columns
+    combined = combined.loc[:, ~combined.columns.duplicated()]
+    return combined
+
+def setup_ranker_inputs(
+    vibe_df: pd.DataFrame,
+    models: List[str],
+    single_position_rank: bool
+) -> pd.DataFrame:
+    """Helper: sets up ranker_inputs, ranker_inputs_reversed, and score_pos_model."""
+    import numpy as np
+
+    if single_position_rank:
+        # randomly permute models in each row
+        rand_models = []
+        for i in range(len(vibe_df)):
+            np.random.seed(i)
+            rand_models.append(list(np.random.permutation(models)))
+
+        vibe_df["score_pos_model"] = rand_models
+        ranker_inputs = []
+        for i in range(len(vibe_df)):
+            row = vibe_df.iloc[i]
+            modelA, modelB = rand_models[i]
+            ranker_inputs.append(
+                f"\nProperty: {row['vibe']}\n\n"
+                f"User prompt:\n{row['question']}\n\n"
+                f"Response A:\n{row[modelA]}\n\n"
+                f"Response B:\n{row[modelB]}\n\n"
+                f"Property (restated): {row['vibe']}"
+            )
+        vibe_df["ranker_inputs"] = ranker_inputs
+
+    else:
+        vibe_df["score_pos_model"] = [models for _ in range(len(vibe_df))]
+        vibe_df["ranker_inputs"] = vibe_df.apply(
+            lambda row: (
+                f"Property: {row['vibe']}\n"
+                f"User prompt:\n{row['question']}\n\n"
+                f"Response A:\n{row[models[0]]}\n\n"
+                f"Response B:\n{row[models[1]]}\n\n"
+                f"Property (restated): {row['vibe']}"
+            ),
+            axis=1
+        )
+        vibe_df["ranker_inputs_reversed"] = vibe_df.apply(
+            lambda row: (
+                f"Property: {row['vibe']}\n"
+                f"User prompt:\n{row['question']}\n\n"
+                f"Response A:\n{row[models[1]]}\n\n"
+                f"Response B:\n{row[models[0]]}\n\n"
+                f"Property (restated): {row['vibe']}"
+            ),
+            axis=1
+        )
+
+    return vibe_df
+
+def merge_ranker_output(
+    vibe_df: pd.DataFrame,
+    ranker_df: pd.DataFrame,
+    models: List[str],
+    suffix: str
+) -> pd.DataFrame:
+    """
+    Helper: merges the ranker output (sem_map results) 
+    into vibe_df, and applies the ranker_postprocess function.
+    """
+    # Merge
+    vibe_df = vibe_df.merge(
+        ranker_df[
+            [
+                "vibe",
+                "question",
+                models[0],
+                models[1],
+                "preference",
+                suffix,
+                f"raw_output{suffix}",
+            ]
+        ],
+        on=["vibe", "question", models[0], models[1], "preference"],
+        how="left",
+    )
+    vibe_df[suffix] = [
+        str(ranker_postprocess(output, model))
+        for output, model in zip(vibe_df[suffix], vibe_df["score_pos_model"])
+    ]
+    return vibe_df
+
+from components.prompts.ranker_prompts import judge_prompt
 def rank_vibes(
     vibes: List[str],
     df: pd.DataFrame,
@@ -38,105 +170,37 @@ def rank_vibes(
     """
     Ranks the two model outputs across the given vibes (axes) using LOTUS ranking prompts.
     """
-    judge_systems_prompt = """You are a fair and unbiased judge. Your task is to compare the outputs of two language models (A and B) on a given propoery. Which repose better aligns more with the given property, A, B, or equal?
-
-Your sole focus is to determine which response better aligns with the given property, NOT how good or bad the response is. Do NOT let the position of the model outputs influence your decision and remain as objective as possible. Consider what the property means and how it applies to the outputs. Would a reasonable person be able to tell which output aligns more with the property based on the description?
-
-Instructions:
-	•	If Response A aligns with the property more than Response B, respond with "A".
-    •	If Response B aligns with the property more than Response A, respond with "B".
-	•	If the responses are roughly equal on the property, respond with "equal".
-	•	If the property does not apply to these outputs (e.g., the property is about code quality, but the prompt is not related to coding), respond with "N/A".
-	•	If you are unsure about the meaning of the property, respond with "unsure". Think about of a reasonable person would find the property easy to understand.
-
-A group of humans should agree with your decision. Use the following format for your response:
-Explanation: {{your explanation}}
-Text from outputs which aligns with the property: "{{text from outputs which aligns with the property}}"
-Text from outputs which does not align with the property: "{{text from outputs which does not align with the property}}"
-Model: {{A, B, equal, N/A, or unsure}}
-
-Remember to be as objective as possible and strictly adhere to the response format."""
-
     ranker_prompt1 = (
-        judge_systems_prompt
+        judge_prompt
         + """
 Here is the property and the two responses:
 {ranker_inputs}
-
 Remember to be as objective as possible and strictly adhere to the response format.
 """
     )
-
     ranker_prompt2 = (
-        judge_systems_prompt
+        judge_prompt
         + """
 Here is the property and the two responses:
 {ranker_inputs_reversed}
-
 Remember to be as objective as possible and strictly adhere to the response format.
 """
     )
 
-    vibe_dfs = []
-    for vibe in vibes:
-        vibe_df = df.copy()
-        vibe_df["vibe"] = vibe
-        vibe_dfs.append(vibe_df)
+    # 1) Build vibe DataFrame
+    vibe_df = build_vibe_df(vibes, df)
 
-    vibe_df = pd.concat(vibe_dfs).reset_index(drop=True)
+    # 2) Create ranker inputs (handles single or multi-position rank creation)
+    vibe_df = setup_ranker_inputs(vibe_df, models, single_position_rank)
 
-    # drop any duplicate columns
-    vibe_df = vibe_df.loc[:, ~vibe_df.columns.duplicated()]
-    if single_position_rank:
-        # randomly shuffle the models for each row 
-        rand_models = []
-        for i in range(len(vibe_df)):
-            np.random.seed(i)
-            rand_models.append(list(np.random.permutation(models)))
-        np.random.seed(42)
-        print(rand_models[:5])
-        vibe_df["score_pos_model"] = rand_models
-        ranker_inputs = []
-        for i in range(len(vibe_df)):
-            ranker_inputs.append(f"\nProperty: {vibe_df['vibe'][i]}\n\nUser prompt:\n{vibe_df['question'][i]}\n\nResponse A:\n{vibe_df[rand_models[i][0]][i]}\n\nResponse B:\n{vibe_df[rand_models[i][1]][i]}\n\nProperty (restated): {vibe_df['vibe'][i]}")
-        vibe_df["ranker_inputs"] = ranker_inputs
-    # vibe_df["ranker_inputs"] = vibe_df.apply(
-    #     lambda row: f"\nProperty: {row['vibe']}\n\nUser prompt:\n{row['question']}\n\nResponse A:\n{row[models[0]]}\n\nResponse B:\n{row[models[1]]}\n\nProperty (restated): {row['vibe']}",
-    #     axis=1,
-    # )
-
-    if not single_position_rank:
-        vibe_df["score_pos_model"] = [models for _ in range(len(vibe_df))]
-        vibe_df["ranker_inputs"] = vibe_df.apply(
-            lambda row: f"Property: {row['vibe']}\nUser prompt:\n{row['question']}\n\nResponse A:\n{row[models[0]]}\n\nResponse B:\n{row[models[1]]}\n\nProperty (restated): {row['vibe']}",
-            axis=1,
-        )
-        vibe_df["ranker_inputs_reversed"] = vibe_df.apply(
-            lambda row: f"Property: {row['vibe']}\nUser prompt:\n{row['question']}\n\nResponse A:\n{row[models[1]]}\n\nResponse B:\n{row[models[0]]}\n\nProperty (restated): {row['vibe']}",
-            axis=1,
-        )
-
+    # 3) Perform ranker_1
     ranker_1 = vibe_df.sem_map(
         ranker_prompt1, return_raw_outputs=True, suffix="ranker_output_1"
     )
+    vibe_df = merge_ranker_output(vibe_df, ranker_1, models, "ranker_output_1")
 
-    vibe_df = vibe_df.merge(
-        ranker_1[
-            [
-                "vibe",
-                "question",
-                models[0],
-                models[1],
-                "preference",
-                "ranker_output_1",
-                "raw_outputranker_output_1",
-            ]
-        ],
-        on=["vibe", "question", models[0], models[1], "preference"],
-        how="left",
-    )
-    vibe_df["ranker_output_1"] = [str(ranker_postprocess(output, model)) for output, model in zip(vibe_df["ranker_output_1"], vibe_df["score_pos_model"])]
-
+    # 4) If single_position_rank == False, don't shuffle the models, just run twice
+    # TODO: change to not combine scores here, just put all into the regression
     if not single_position_rank:
         ranker_2 = vibe_df.sem_map(
             ranker_prompt2, return_raw_outputs=True, suffix="ranker_output_2"
@@ -148,22 +212,36 @@ Remember to be as objective as possible and strictly adhere to the response form
             on=["question", models[0], models[1], "preference"],
             how="left",
         )
-        vibe_df["ranker_output_2"] = [ranker_postprocess(output, model) for output, model in zip(vibe_df["ranker_output_2"], vibe_df["score_pos_model"])]
-        vibe_df["score"] = vibe_df["ranker_output_1"].apply(lambda x: 1 if x == models[0] else -1 if x == models[1] else 0)
-        vibe_df["score_reversed"] = vibe_df["ranker_output_2"].apply(lambda x: 1 if x == models[0] else -1 if x == models[1] else 0)
+        vibe_df["ranker_output_2"] = [
+            ranker_postprocess(output, model)
+            for output, model in zip(
+                vibe_df["ranker_output_2"], vibe_df["score_pos_model"]
+            )
+        ]
+
+        # 5) Compute final score (excluding collisions)
+        vibe_df["score"] = vibe_df["ranker_output_1"].apply(
+            lambda x: 1 if x == models[0] else (-1 if x == models[1] else 0)
+        )
+        vibe_df["score_reversed"] = vibe_df["ranker_output_2"].apply(
+            lambda x: 1 if x == models[0] else (-1 if x == models[1] else 0)
+        )
         vibe_df["position_matters"] = (
-            (vibe_df["score"] != -1 * vibe_df["score_reversed"]) | 
-            (vibe_df["score"] == 0) | 
-            (vibe_df["score_reversed"] == 0)
+            (vibe_df["score"] != -1 * vibe_df["score_reversed"])
+            | (vibe_df["score"] == 0)
+            | (vibe_df["score_reversed"] == 0)
         )
         vibe_df["score"] = vibe_df.apply(
-            lambda row: row["score"] if not row["position_matters"] else 0,
-            axis=1,
+            lambda row: row["score"] if not row["position_matters"] else 0, axis=1
         )
         wandb.summary["prop_position_collisions"] = vibe_df["position_matters"].mean()
+
     else:
+        # single-position rank scoring
         vibe_df["score_label"] = vibe_df["ranker_output_1"]
-        vibe_df["score"] = vibe_df["score_label"].apply(lambda x: 1 if x == models[0] else (-1 if x == models[1] else 0))
+        vibe_df["score"] = vibe_df["score_label"].apply(
+            lambda x: 1 if x == models[0] else (-1 if x == models[1] else 0)
+        )
 
     return vibe_df
 

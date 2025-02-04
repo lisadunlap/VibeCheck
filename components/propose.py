@@ -38,7 +38,7 @@ def parse_axes(text: str):
             axes.append(cleaned)
     return axes
 
-class VibeProposer:
+class VibeProposerBase:
     """
     Propose new vibe axes (behaviors).
     """
@@ -61,9 +61,9 @@ class VibeProposer:
         pass
     
 
-class VibeProposerExtended(VibeProposer):
+class VibeProposer(VibeProposerBase):
     """
-    An extended VibeProposer that manages loading, batching, and LLM calls in a 
+    An VibeProposer that manages loading, batching, and LLM calls in a 
     structured, step-by-step way. The `propose` method handles dataset preparation
     and batching, while the `propose_batch` method does the actual LLM call(s) 
     and parsing for each batch. This design allows for a clean separation of

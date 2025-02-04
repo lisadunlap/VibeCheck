@@ -63,7 +63,7 @@ def vibe_discovery(
     Returns:
         dict: Contains vibes_df and preference distribution plot
     """
-    from components.propose import VibeProposerExtended
+    from components.propose import VibeProposer
 
     models = list(config.models)
     # Create preference distribution plot
@@ -83,7 +83,7 @@ def vibe_discovery(
     pref_dist_plot.write_html(os.path.join(output_dir, "preference_distribution.html"))
 
     # Propose vibes
-    vibes, proposer_results = VibeProposerExtended(
+    vibes, proposer_results = VibeProposer(
         models,
         config,
     ).propose(df, current_vibes=current_vibes)
@@ -327,6 +327,8 @@ def main(config):
         raise ValueError(
             f"Models {models} or question column not found in dataframe."
         )
+    if config.num_samples is not None:
+        df = df.sample(config.num_samples, random_state=42)
 
     df = df[df["preference"].isin(models)].reset_index(drop=True)
     # set conversation_id to be the index of the question, models[0], models[1]
@@ -422,21 +424,31 @@ def main(config):
 
 
 if __name__ == "__main__":
-    # Load default config
-    config = OmegaConf.load("configs/base.yaml")
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--config", type=str, default="configs/base.yaml")
+    known_args, unknown_args = parser.parse_known_args()
 
-    # Merge with CLI arguments if any
-    cli_config = OmegaConf.from_cli()
+    # Load base config
+    base_config = OmegaConf.load("configs/base.yaml")
+
+    # If --config was passed in, load that as well
+    user_config = OmegaConf.load(known_args.config)
+    config = OmegaConf.merge(base_config, user_config)
+
+    # Merge with any unknown key=value args from the command line
+    # e.g. python main.py data_path=something models=[foo,bar] ...
+    cli_config = OmegaConf.from_cli(unknown_args)
     config = OmegaConf.merge(config, cli_config)
 
-    # Validate required arguments
+    # Now config.* fields are populated from the base config, your custom config,
+    # and any command-line overrides.
     if config.data_path is None:
-        raise ValueError("data_path must be specified")
+        raise ValueError("data_path must be specified.")
     if config.models is None:
-        raise ValueError("models must be specified")
+        raise ValueError("models must be specified.")
 
     if not config.wandb:
         os.environ["WANDB_MODE"] = "offline"
 
-    # getting the party started
+    # Finally, run the main pipeline
     main(config)

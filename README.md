@@ -38,19 +38,21 @@ To run local models, you can use the [LiteLLM library](https://docs.litellm.ai/d
 
 4. Example run
 ```
-python main.py --data_path data/friendly_and_cold_sample.csv --models friendly cold --num_final_vibes 3
+python main.py data_path=data/friendly_and_cold_sample.csv models=[friendly,cold] num_final_vibes=3
 ```
 This runs a toy example on LLM outputs, one model is prompted to be friendly, the other cold and factual. I randomly assigned preference so friendly results are favored 80% of the time
 
+Alternatively, you can set a custom [config](configs/base.yaml) and run with `python main.py --config configs/my_config.yaml [any other args you want to override]`
+
 **Note:** We use a slightly different definition of vibe than the paper (e.g. "friendly tone" instead of "Tone: High: friendly Low: cold"). I think this definition is more intuitive, but if you want to use the paper definition, you can run `main_old.py` with the same arguments.
 
-*Gradio Visualization:* Add the `--gradio` flag to see a gradio visualization of the data. This is useful for debugging the ranker outputs by looking at the pairwise comparisons.
+*Gradio Visualization:* Add the `gradio=true` flag to see a gradio visualization of the data. This is useful for debugging the ranker outputs by looking at the pairwise comparisons.
 
 ## Data Structure
 
 All data needs to contain the columns "question", model_name_1, model_name_2, and optionally "preference". If the preference column is not provided, run `generate_preference_labels.py` to compute the preference via LLM as a judge.
 
-Say your two models are gpt-4o and gemini-1.5-flash. Your CSV should have the columns "question", "gpt-4o", "gemini-1.5-flash" and in your command, set your data path and set `--models gpt-4o gemini-1.5-flash`. Sometime soon I will add an option to only optimize for model matching if you only care to find differentiating qualities, so get excited for that. 
+Say your two models are gpt-4o and gemini-1.5-flash. Your CSV should have the columns "question", "gpt-4o", "gemini-1.5-flash" and in your command, set your data path and set `models=['gpt-4o', 'gemini-1.5-flash']`. If you only care to find differentiating qualities, you can set `filter.min_pref_score_diff=0`.
 
 ## 🎯 Citation
 
