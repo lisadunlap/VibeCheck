@@ -19,3 +19,6 @@ torchvision
 InstructorEmbedding
 open_clip_torch
 flask
+python-Levenshtein
+git+https://github.com/guestrin-lab/lotus.git
+gradio

@@ -1,1116 +1,658 @@
-import pandas as pd
-import os
-import random
-import numpy as np
-import wandb
-from omegaconf import OmegaConf
 import argparse
-from sklearn.metrics import cohen_kappa_score
-from itertools import combinations
+import wandb
+import pandas as pd
+from plotly import graph_objects as go
+import numpy as np
+import os
+import lotus
+from lotus.models import LM, SentenceTransformersRM
+from lotus.cache import CacheConfig, CacheType, CacheFactory
 
-from serve.utils_llm import get_llm_output
-from components.proposer_prompts import *
-from components.parsing_utils import *
-import components.ranker as rankers
-import components.proposer as proposers
-import components.reducer as reducers
-import components.sampler as samplers
-from components.mm_and_pp_modeling import (
-    get_score,
-    create_feature_df,
-    train_model,
-    generate_vibe_overlap_heatmap,
-    calculate_vibe_overlap
+from typing import List
+
+from utils import (
+    proposer_postprocess,
+    parse_axes,
+    get_pref_score,
+    train_and_evaluate_model,
+    get_feature_df,
+    ranker_postprocess,
+    create_side_by_side_plot,
 )
 
 
-def get_save_str(args, num_samples, model_group):
-    # Create string of datapath for saving
-    save_str = args.data_path.split("/")[-1].split(".")[0]
-    save_str = f"{save_str}/{args.output_name}" if args.output_name else save_str
-    save_str = f"{save_str}/{args.proposer}-{args.sampler}_{args.ranker}/{'_'.join(args.judges)}"
-    tag = (
-        f"{model_group}_k{args.k}_seed{args.seed}"
-        if not args.num_samples
-        else f"{model_group}_{args.k}_samples{num_samples}_seed{args.seed}"
+def rank_axes(vibes: List[str], df: pd.DataFrame, models: List[str], single_position_rank: bool = False):
+    """
+    Ranks the two model outputs across the given vibes (axes) using LOTUS ranking prompts.
+    """
+    judge_systems_prompt = """You are a fair and unbiased judge. Your task is to compare the outputs of two language models (A and B) on a given propoery. Which repose better aligns more with the given property, A, B, or equal?
+
+Your sole focus is to determine which response better aligns with the given property, NOT how good or bad the response is. Avoid any position bias and remain as objective as possible. Consider what the property means and how it applies to the outputs. Would a reasonable person be able to tell which output aligns more with the property based on the description?
+
+Instructions:
+	•	If Response A aligns with the property more than Response B, respond with "A".
+    •	If Response B aligns with the property more than Response A, respond with "B".
+	•	If the responses are roughly equal on the property, respond with "equal".
+	•	If the property does not apply to these outputs (e.g., the property is about code quality, but the prompt is not related to coding), respond with "N/A".
+	•	If you are unsure about the meaning of the property, respond with "unsure". Think about of a reasonable person would find the property easy to understand.
+
+A group of humans should agree with your decision. Use the following format for your response:
+Explanation: {{your explanation}}
+Text from outputs which aligns with the property: "{{text from outputs which aligns with the property}}"
+Text from outputs which does not align with the property: "{{text from outputs which does not align with the property}}"
+Model: {{A, B, equal, N/A, or unsure}}
+
+Remember to be as objective as possible and strictly adhere to the response format."""
+
+    ranker_prompt1 = (
+        judge_systems_prompt
+        + """
+Here is the property and the two responses:
+{ranker_inputs}
+
+Remember to be as objective as possible and strictly adhere to the response format.
+"""
     )
-    tag = f"{tag}_dummy_eval" if args.dummy_eval else tag
-    tag = f"{tag}_axes_provided" if args.axes else tag
-    tag = f"{tag}_early_stopping" if args.early_stopping else tag
-    tag = f"{tag}_filter" if args.filter else tag
-    tag = f"{tag}_filter_mm_only" if args.filter_mm_only else tag
-    if not os.path.exists(f"{args.save_dir}/{save_str}"):
-        os.makedirs(f"{args.save_dir}/{save_str}", exist_ok=True)
-    return save_str, tag
 
+    ranker_prompt2 = (
+        judge_systems_prompt
+        + """
+Here is the property and the two responses:
+{ranker_inputs_reversed}
 
-def load_experiment(results_dir, tag, args):
-    results = pd.read_csv(f"{results_dir}/{tag}-reducer_results.csv")
-    eval_axes = (
-        results["axis"]
-        .value_counts()[: min(args.num_eval, len(results["axis"].unique()))]
-        .index.tolist()
+Remember to be as objective as possible and strictly adhere to the response format.
+"""
     )
-    print(f"\n\n{results['axis'].value_counts()}\n{eval_axes}\n\n")
-    return eval_axes
 
+    vibe_dfs = []
+    for vibe in vibes:
+        vibe_df = df.copy()
+        vibe_df["vibe"] = vibe
+        vibe_dfs.append(vibe_df)
 
-def remove_similar_fuzzy_rows(df, col1, col2, threshold=80):
-    from fuzzywuzzy import fuzz
+    vibe_df = pd.concat(vibe_dfs).reset_index(drop=True)
 
-    # Create a boolean mask for rows to keep
-    mask = [fuzz.ratio(str(a), str(b)) < threshold for a, b in zip(df[col1], df[col2])]
-    # Apply the mask to keep only dissimilar rows
-    df_filtered = df[mask]
-    return df_filtered
-
-
-def propose_axes(proposal_df, args):
-    proposer = getattr(proposers, args.proposer)(args)
-    (
-        all_axis_descriptions,
-        llm_logs,
-        pairwise_differences,
-        results,
-    ) = proposer.propose(proposal_df)
-
-    # Log the proposer outputs
-    wandb.log(
-        {
-            "per_sample_differences": wandb.Table(dataframe=results),
-            "pairwise_diff_llm_logs": wandb.Table(dataframe=llm_logs),
-        }
+    # drop any duplicate columns
+    vibe_df = vibe_df.loc[:, ~vibe_df.columns.duplicated()]
+    vibe_df["ranker_inputs"] = vibe_df.apply(
+        lambda row: f"\nProperty: {row['vibe']}\n\nUser prompt:\n{row['question']}\n\nResponse A:\n{row[models[0]]}\n\nResponse B:\n{row[models[1]]}\n\nProperty (restated): {row['vibe']}",
+        axis=1,
     )
-    all_axis_descriptions = list(results["axis_description"])
-    return all_axis_descriptions, results
-
-
-def propose_axes_iteration(proposal_df, args, axes, iteration=1):
-    if args.give_prev_axes:
-        proposer = getattr(proposers, "LLMProposerIterationNewOnly")(args, axes)
-        (
-            all_axis_descriptions,
-            llm_logs,
-            pairwise_differences,
-            results,
-        ) = proposer.propose(proposal_df)
-    else:
-        proposer = getattr(proposers, args.proposer)(args)
-        (
-            all_axis_descriptions,
-            llm_logs,
-            pairwise_differences,
-            results,
-        ) = proposer.propose(proposal_df)
-
-    # Log the proposer outputs
-    wandb.log(
-        {
-            f"per_sample_differences-{iteration}": wandb.Table(dataframe=results),
-            f"pairwise_diff_llm_logs-{iteration}": wandb.Table(dataframe=llm_logs),
-        }
-    )
-    all_axis_descriptions = list(results["axis_description"])
-    return all_axis_descriptions, results
-
-
-def reduce_axes(all_axis_descriptions, results, args, save_str="results", eval_axes=[]):
-    all_axis_descriptions = [x.replace("*", "") for x in all_axis_descriptions]
-
-    reducer = getattr(reducers, args.reducer)(args)
-    parent_axes, child_parent_map, tables = reducer.reduce(all_axis_descriptions)
-    results["axis"] = child_parent_map
-
-    # Log the reducer outputs
-    metrics = {k: wandb.Table(dataframe=v) for k, v in tables.items()}
-    metrics["eval_axes"] = results["axis"].value_counts().reset_index()
-    wandb.log(metrics)
-
-    prompt = """Here is a list of axes on which two strings may vary. Each axis has a description of what makes a string high or low on that axis.
-{existing_axes} 
-{new_axes}
-
-It is likely that several of these axes measure similar things. Your task is to remove any redundant axes. Think about if a user would gain any new information from seeing both axes. For example, "Emotional Tone: High: Contains emotionally charged language. Low: Maintains a neutral tone." and "Empathy: High: Shows empathy. Low: Only factual answers without empathy." are redundant because they both measure the emotional content of the text. If two similar axes are found, keep the one that is more informative.
-
-Output the reduced list of axes, seperated by a newline. All of the axes should maintain the same format they have in the list of {{axis}}: High: {{high}} Low: {{low}}
-
-Your Response:"""
-    new_axes = list(set(results["axis"]))
-    if len(eval_axes) > 0:
-        output = get_llm_output(
-            prompt.format(
-                existing_axes="\n".join(eval_axes), new_axes="\n".join(new_axes)
-            ),
-            model="gpt-4o",
+    if not single_position_rank:
+        vibe_df["ranker_inputs_reversed"] = vibe_df.apply(
+            lambda row: f"Property: {row['vibe']}\nUser prompt:\n{row['question']}\n\nResponse A:\n{row[models[1]]}\n\nResponse B:\n{row[models[0]]}\n\nProperty (restated): {row['vibe']}",
+            axis=1,
         )
-        print(
-            prompt.format(
-                existing_axes="\n".join(eval_axes), new_axes="\n".join(new_axes)
-            )
-        )
-        axes = output.replace("*", "").split("\n")
-        all_axes = eval_axes + axes
-        # remove any axes which do not exist in all_axes
-        axes = [a for a in axes if a in all_axes]
-        print("------------------------------")
-        print(
-            f"Old Axes Length: {len(new_axes) + len(eval_axes)}\tNew Axes Length: {len(axes)}"
-        )
-        print(f"Axes Removed: {set(all_axes) - set(axes)}")
-        print("------------------------------")
-        # reset new axes to the intersection of the new axes and the axes returned by the user
-        new_axes = [n for n in new_axes if n in axes]
 
-    eval_axes = (
-        results["axis"]
-        .value_counts()
-        .head(min(args.num_eval, len(results["axis"].unique())))
-        .index.tolist()
+    ranker_1 = vibe_df.sem_map(
+        ranker_prompt1, return_raw_outputs=True, suffix="ranker_output_1"
     )
 
-    return eval_axes, results
-
-
-def evaluate_axes(eval_axes, data_df, args):
-    evaluator = getattr(rankers, args.ranker)(args)
-    print("Evaluating axes: " + "\n".join(eval_axes))
-    metrics, results, scoring_logs = evaluator.score(
-        eval_axes, data_df.to_dict("records")
-    )
-
-    cohns_results = {}
-    for axis in results.axis.unique():
-        if "Judge_1_final_score" in results.columns:
-            axis_eval = results[results.axis == axis]
-            judge_0_score = axis_eval["Judge_0_final_score"]
-            judge_1_score = axis_eval["Judge_1_final_score"]
-            # compute cohns kappa
-            kappa = cohen_kappa_score(judge_0_score, judge_1_score)
-            print(f"Kappa for {axis}: {kappa}")
-        else:
-            kappa = 0
-
-        cohns_results[axis] = kappa
-
-    # results["score"] = results["avg_final_scores"]
-    if len(eval_axes) > len(results["axis"].unique()):
-        print("Some axes were removed during evaluation.")
-    eval_axes = results["axis"].unique().tolist()
-
-    # Calculate vibe overlaps (uncomment if you want to remove any vibes which scores operlap a lot)
-    # removed_vibes = []
-    # vibe_overlaps = {}
-    # for vibe1, vibe2 in combinations(eval_axes, 2):
-    #     overlap = calculate_vibe_overlap(results, vibe1, vibe2, args.models)
-    #     vibe_overlaps[f"{vibe1} & {vibe2}"] = overlap
-    #     if overlap > 0.9:
-    #         print(f"Overlap between {vibe1} and {vibe2}: {overlap}")
-    #         if vibe1 not in removed_vibes and vibe2 not in removed_vibes:
-    #             removed_vibes.append(vibe2)
-    # eval_axes = [axis for axis in eval_axes if axis not in removed_vibes]
-
-    # Generate and save vibe overlap heatmap
-    correlation_matrix, image_path = generate_vibe_overlap_heatmap(
-        results, eval_axes, args.models
-    )
-
-    # Log the evaluator outputs
-    wandb.log(
-        {
-            "scoring_logs": wandb.Table(dataframe=scoring_logs),
-            "summary_results": wandb.Table(dataframe=results),
-            "metrics": metrics,
-            "vibe_overlap_heatmap": wandb.Image(image_path),
-        }
-    )
-    return eval_axes, metrics, results, scoring_logs, cohns_results
-
-
-def filter_axes(eval_axes, previous_axes, results, args, iteration=1):
-    results["preference"] = results["preference"].apply(
-        lambda x: get_pref_score(x, args)
-    )
-    results["preference"] = results["preference"].apply(get_score)
-    # add preference as an axis to results
-    preference_df = results.drop_duplicates(subset=["question", *list(args.models)])
-    preference_df["axis"] = "preference"
-    preference_df["score"] = preference_df["preference"]
-    results = pd.concat([results, preference_df])
-
-    feature_df = create_feature_df(results, args).dropna()
-    feature_df1 = feature_df.copy()
-    feature_df2 = feature_df.copy()
-    feature_df1["model_label"] = 0
-    feature_df2["model_label"] = 1
-    for axis in eval_axes:
-        feature_df2[axis] = -feature_df2[axis]
-    feature_df2["preference"] = -feature_df2["preference"]
-    feature_df = pd.concat([feature_df1, feature_df2])
-    feature_df["preference"] = feature_df["preference"].apply(
-        lambda x: 0 if x > 0 else 1
-    )
-
-    X = feature_df[eval_axes]
-    y = feature_df["model_label"]
-
-    # Train and evaluate preference model
-    (
-        mm_acc,
-        mm_feature_importance,
-        mm_test_results,
-        train_mm_accuracy,
-        mm_train_results,
-        mm_summary,
-        mm_feature_order,
-    ) = train_model(
-        X, y, X, y, eval_axes, "model_label", model_type="lasso", x_val=True
-    )
-
-    # Train and evaluate preference model
-    (
-        pref_accuracy,
-        pref_feature_importance,
-        pref_test_results,
-        train_pref_accuracy,
-        pref_train_results,
-        pref_summary,
-        pref_feature_order,
-    ) = train_model(X, y, X, y, eval_axes, "preference", model_type="lasso", x_val=True)
-
-    # remove 'const' from pref_feature_importance and mm_feature_importance
-    pref_feature_importance = pref_feature_importance[
-        pref_feature_importance["feature"] != "const"
-    ]
-    mm_feature_importance = mm_feature_importance[
-        mm_feature_importance["feature"] != "const"
-    ]
-    # abso val of coeff < 0.1
-    pref_feature_importance["score"] = pref_feature_importance["feature"].apply(
-        lambda x: np.mean(feature_df1[x].tolist())
-    )
-    pref_feature_importance["pref_score"] = pref_feature_importance["feature"].apply(
-        lambda x: np.average(
+    vibe_df = vibe_df.merge(
+        ranker_1[
             [
-                s * p
-                for s, p in zip(
-                    feature_df1[x].tolist(), feature_df1["preference"].tolist()
-                )
+                "vibe",
+                "question",
+                models[0],
+                models[1],
+                "preference",
+                "ranker_output_1",
+                "raw_outputranker_output_1",
             ]
+        ],
+        on=["vibe", "question", models[0], models[1], "preference"],
+        how="left",
+    )
+    vibe_df["ranker_output_1"] = vibe_df["ranker_output_1"].apply(ranker_postprocess)
+    if not single_position_rank:
+        ranker_2 = vibe_df.sem_map(
+            ranker_prompt2, return_raw_outputs=True, suffix="ranker_output_2"
         )
-    )
-    if args.filter_mm_only:
-        filtered_eval_axes = pref_feature_importance[
-            (pref_feature_importance["score"].abs() > 0.05)
-        ]["feature"].tolist()
-    else:
-        filtered_eval_axes = pref_feature_importance[
-            (pref_feature_importance["score"].abs() > 0.05)
-            | (pref_feature_importance["pref_score"].abs() > 0.05)
-        ]["feature"].tolist()
-
-    filtered_eval_axes = [f for f in filtered_eval_axes if f != "const"]
-
-    removed_axes = list(set(eval_axes) - set(filtered_eval_axes))
-    print(f"Removed Axes: {removed_axes}")
-    return filtered_eval_axes, removed_axes
-
-
-def train_lr_models(
-    eval_results,
-    preference_results,
-    test_eval_results,
-    test_preference_results,
-    args,
-    eval_axes,
-    iteration=1,
-    save_str="results",
-    tag="train",
-    cohns_kapps_results=None,
-):
-    # Prepare data for preference model
-    def prep_feat_df(eval_results, preference_results, args):
-        preference_results["score"] = preference_results["avg_final_scores"]
-        preference_results["axis"] = "preference"
-        eval_results["score"] = eval_results["avg_final_scores"]
-        df_pref = pd.concat([eval_results, preference_results])
-        feat_df = create_feature_df(df_pref, args)
-        feat_df.dropna(inplace=True)
-        feat_df1 = feat_df.copy()
-        feat_df2 = feat_df.copy()
-        feat_df1["model_label"] = 0
-        feat_df2["model_label"] = 1
-        for axis in eval_axes:
-            feat_df2[axis] = -feat_df2[axis]
-        feat_df2["preference"] = -feat_df2["preference"]
-        return feat_df, pd.concat([feat_df1, feat_df2])
-
-    print("Train Pref Features")
-    print(test_preference_results)
-    train_feat_df, train_pref_features = prep_feat_df(
-        eval_results, preference_results, args
-    )
-    test_feat_df, test_pref_features = prep_feat_df(
-        test_eval_results, test_preference_results, args
-    )
-
-    X_train_pref = train_pref_features[eval_axes]
-    y_train_pref = train_pref_features["preference"].apply(lambda x: 1 if x > 0 else 0)
-
-    X_test_pref = test_pref_features[eval_axes]
-    y_test_pref = test_pref_features["preference"].apply(lambda x: 1 if x > 0 else 0)
-
-    train_feat_df.to_json(
-        f"{args.save_dir}/{save_str}/feature_df-{tag}_{iteration}.json",
-        orient="records",
-    )
-    test_feat_df.to_json(
-        f"{args.save_dir}/{save_str}/test_feature_df-{tag}_{iteration}.json",
-        orient="records",
-    )
-
-    # Train and evaluate preference model
-    (
-        pref_accuracy,
-        pref_feature_importance,
-        pref_test_results,
-        train_pref_accuracy,
-        pref_train_results,
-        pref_summary,
-        pref_feature_order,
-    ) = train_model(
-        X_train_pref,
-        y_train_pref,
-        X_test_pref,
-        y_test_pref,
-        eval_axes,
-        "preference",
-        model_type="logistic" if not args.ridge_regression else "ridge",
-        x_val=True if tag == "train" else False,
-    )
-    pref_train_results["question"] = train_feat_df["question"]
-    pref_test_results["question"] = test_feat_df["question"]
-    for model in args.models:
-        pref_train_results[model] = train_feat_df[model]
-        pref_test_results[model] = test_feat_df[model]
-
-    X_train_mm = train_pref_features[eval_axes]
-    y_train_mm = train_pref_features["model_label"]
-
-    X_test_mm = test_pref_features[eval_axes]
-    y_test_mm = test_pref_features["model_label"]
-
-    # Train and evaluate mm model
-    (
-        mm_accuracy,
-        mm_feature_importance,
-        mm_test_results,
-        train_mm_accuracy,
-        mm_train_results,
-        mm_summary,
-        mm_feature_order,
-    ) = train_model(
-        X_train_mm,
-        y_train_mm,
-        X_test_mm,
-        y_test_mm,
-        eval_axes,
-        "model_label",
-        model_type="logistic" if not args.ridge_regression else "ridge",
-        x_val=True if tag == "train" else False,
-    )
-
-    mm_train_results["question"] = train_feat_df["question"]
-    mm_test_results["question"] = test_feat_df["question"]
-    for model in args.models:
-        mm_train_results[model] = train_feat_df[model]
-        mm_test_results[model] = test_feat_df[model]
-
-    def compute_final_score(scores):
-        return np.mean(scores)
-
-    def get_pref_score(scores, pref):
-        return np.average([s * p for s, p in zip(scores, pref)])
-
-    mm_feature_importance["score"] = mm_feature_importance["feature"].apply(
-        lambda x: compute_final_score(train_feat_df[x].tolist())
-    )
-    pref_feature_importance["score"] = pref_feature_importance["feature"].apply(
-        lambda x: compute_final_score(train_feat_df[x].tolist())
-    )
-    pref_feature_importance["pref_score"] = pref_feature_importance["feature"].apply(
-        lambda x: get_pref_score(
-            train_feat_df[x].tolist(), train_feat_df["preference"].tolist()
-        )
-    )
-    # join on feature, labeling pref_feature_importance with "_pref"
-    all_feature_importance = pref_feature_importance.merge(
-        mm_feature_importance, on="feature", suffixes=("_pref", "_mm")
-    )
-    all_feature_importance["cohns"] = all_feature_importance["feature"].apply(
-        lambda x: cohns_kapps_results[x] if x in cohns_kapps_results else 0
-    )
-
-    # Log LR model outputs
-    wandb.log(
-        {
-            f"pref_feature_importance_iter_{iteration}-{tag}": wandb.Table(
-                dataframe=pref_feature_importance
-            ),
-            f"mm_feature_importance_iter_{iteration}-{tag}": wandb.Table(
-                dataframe=mm_feature_importance
-            ),
-            f"all_feature_importance_iter_{iteration}-{tag}": wandb.Table(
-                dataframe=all_feature_importance
-            ),
-        }
-    )
-    wandb.summary[f"pref_model_prediction_value_counts_iter_{iteration}-{tag}"] = str(
-        pref_test_results[: len(pref_test_results) // 2]["predicted"]
-        .value_counts()
-        .reset_index()
-    )
-    pref_feature_importance.to_json(
-        f"{args.save_dir}/{save_str}/pref_feature_importance-{tag}_iter_{iteration}.json",
-        orient="records",
-    )
-    mm_feature_importance.to_json(
-        f"{args.save_dir}/{save_str}/mm_feature_importance-{tag}_iter_{iteration}.json",
-        orient="records",
-    )
-    eval_axes = list(
-        set(pref_feature_importance["feature"]).intersection(
-            set(mm_feature_importance["feature"])
-        )
-    )
-
-    return (
-        pref_accuracy,
-        mm_accuracy,
-        pref_test_results,
-        mm_test_results,
-        eval_axes,
-        pref_feature_importance,
-        mm_feature_importance,
-        mm_feature_order,
-    )
-
-
-def get_misclassified_samples(
-    pref_train_results, mm_train_results, data_df, models, args
-):
-    pref_train_results["pref_correct"] = pref_train_results["correct"]
-    mm_train_results["mm_correct"] = mm_train_results["correct"]
-    pref_train_results = pref_train_results.drop_duplicates(
-        subset=["question"] + models
-    )
-
-    pref_train_results = pref_train_results.merge(
-        mm_train_results, on=["question"] + models, how="inner"
-    )
-    if args.filter_mm_only:
-        misclassified = pref_train_results[pref_train_results["mm_correct"] == False]
-    else:
-        misclassified = pref_train_results[
-            (pref_train_results["pref_correct"] == False)
-            | (pref_train_results["mm_correct"] == False)
-        ]
-
-    # get those samples from data_df
-    print(f"Misclassified: {len(misclassified)}")
-    # return samples where either models are misclassified
-    return data_df[data_df["question"].isin(misclassified["question"])].drop_duplicates(
-        subset="question"
-    )
-
-
-def get_pref_score(preference, args):
-    if preference == args.models[0]:
-        return [1, -1]
-    elif preference == args.models[1]:
-        return [-1, 1]
-    else:
-        return [0, 0]
-
-
-def get_llm_pref_score(df, args):
-    if args.dummy_preference:
-        return [args.models[0]] * len(df)
-
-    args_copy = args.copy()
-    args_copy.judges = args.preference_judges
-    evaluator = getattr(rankers, "PreferenceRanker")(args_copy)
-
-    # Score preference on training data
-    (
-        preference_metrics,
-        preference_results,
-        preference_scoring_logs,
-    ) = evaluator.score(
-        ["preference"],
-        df.to_dict("records"),
-    )
-    preference_results["score"] = preference_results["avg_final_scores"]
-
-    def get_p(score):
-        if score > 0:
-            return args.models[0]
-        elif score < 0:
-            return args.models[1]
-        else:
-            return "equal"
-
-    preferences = preference_results["score"].apply(get_p)
-    print(f"Preferences: {preferences}")
-    return preferences
-
-
-def main():
-    # Add in args to override defaults
-    parser = argparse.ArgumentParser(description="CLIP Advice")
-    parser.add_argument("--config", default="configs/base.yaml", help="config file")
-    parser.add_argument(
-        "overrides",
-        nargs="*",
-        help="Any key=value arguments to override config values "
-        "(use dots for.nested=overrides)",
-    )
-    flags, unknown = parser.parse_known_args()
-
-    overrides = OmegaConf.from_cli(flags.overrides)
-    base_cfg = OmegaConf.load("configs/base.yaml")
-    cfg = OmegaConf.load(flags.config)
-    args = OmegaConf.merge(base_cfg, cfg, overrides)
-    args.yaml = flags.config
-
-    np.random.seed(args.seed)
-    random.seed(args.seed)
-
-    # Turn off wandb logging if not needed
-    if not args.wandb:
-        os.environ["WANDB_MODE"] = "dryrun"
-    proj_name = args.project if not args.dummy_eval else f"llm_eval_refactor_debug"
-    proj_name = f"{proj_name}_test" if args.test else proj_name
-    df = pd.read_csv(args.data_path)
-    print(f"Models: {args.models}")
-    print(f"Eval Axes: {args.axes}")
-    print(f"df columns: {df.columns}")
-    # Remove duplicate question-answer
-    df.drop_duplicates(subset=args.models, inplace=True)
-
-    if args.group_column:
-        groups = df[args.group_column].unique()
-        print(f"Running VibeCheck on group {args.group_column}({groups})")
-        print(f"Group value counts: {df[args.group_column].value_counts()}")
-    else:
-        groups = ["all"]
-
-    old_df = df
-    print(f"df columns: {df.columns}")
-    df = (
-        df[["question", *args.models]]
-        if "preference" not in df.columns
-        else df[["question", *args.models, "preference"]]
-    )
-    # Add in group_column if it exists
-    if args.group_column:
-        df[args.group_column] = old_df[args.group_column]
-
-    if args.test_data_path:
-        heldout_df = pd.read_csv(args.test_data_path)
-        heldout_df = (
-            heldout_df[["question", *args.models]]
-            if "preference" not in heldout_df.columns
-            else heldout_df[["question", *args.models, "preference"]]
-        )
-    else:
-        heldout_df = df
-
-    # Get first 3 letters of each model if length is too long (>50)
-    model_group = "-".join(args.models).replace(" ", "")
-    model_group = (
-        "-".join([x[:3] for x in args.models]).replace(" ", "")
-        if len(model_group) > 50
-        else model_group
-    )
-    wandb.init(
-        project=proj_name,
-        config=dict(args),
-        group=model_group,
-        name=args.output_name if args.output_name else "plz_name_me",
-    )
-    wandb.run.log_code(flags.config)
-
-    num_samples = (
-        min(args.num_samples, df.shape[0]) if args.num_samples else df.shape[0]
-    )
-    num_samples = 10 if args.test else num_samples
-    num_eval_samples = (
-        min(args.num_eval_samples, heldout_df.shape[0])
-        if args.num_eval_samples
-        else heldout_df.shape[0]
-    )
-    num_eval_samples = 10 if args.test else num_eval_samples
-
-    save_str, tag = get_save_str(args, num_samples, model_group)
-    early_stopping = args.early_stopping if hasattr(args, "early_stopping") else False
-
-    # Remove similar rows
-    old_len, old_heldout_len = len(df), len(heldout_df)
-    df = remove_similar_fuzzy_rows(df, args.models[0], args.models[1], threshold=80)
-    heldout_df = remove_similar_fuzzy_rows(
-        heldout_df, args.models[0], args.models[1], threshold=80
-    )
-    print(f"Removed {old_len - len(df)} similar rows")
-    print(f"Removed {old_heldout_len - len(heldout_df)} similar rows in heldout data")
-
-    # Randomly sample rows
-    if args.num_samples or args.test:
-        df = df.sample(frac=1, random_state=args.seed).reset_index(drop=True)[
-            :num_samples
-        ]
-    if args.num_eval_samples or args.test:
-        heldout_df = heldout_df.sample(frac=1, random_state=args.seed).reset_index(
-            drop=True
-        )[:num_eval_samples]
-
-    # Sample (this is a NoOp if you arent clustering by question type)
-    sampler = getattr(samplers, args.sampler)(args)
-    df, _ = sampler.sample(df)
-
-    # Initialize variables for the iteration loop
-    max_iterations = args.max_iterations if hasattr(args, "max_iterations") else 3
-
-    # Initialize preference results if needed
-    if "preference" not in df.columns:
-        enter = input(
-            "You are about to generate preference scores. Press enter to continue."
-        )
-        if not enter == "":
-            exit()
-        # raise ValueError("Preference column not found in df")
-        df["preference"] = get_llm_pref_score(df, args)
-        heldout_df["preference"] = get_llm_pref_score(heldout_df, args)
-        # drop any preference
-        df = df[df["preference"] != "equal"]
-        heldout_df = heldout_df[heldout_df["preference"] != "equal"]
-        df.to_csv(f"{args.save_dir}/{save_str}/df-{tag}.csv", index=False)
-        heldout_df.to_csv(
-            f"{args.save_dir}/{save_str}/heldout_df-{tag}.csv", index=False
-        )
-        
-    print(f"Train Preference Value Counts: {df['preference'].value_counts()}")
-    print(
-        f"Test Preference Value Counts: {heldout_df['preference'].value_counts()}"
-    )
-
-    eval_axes = []
-    prev_eval_axes = []
-    max_mm_acc = 0
-    max_pref_acc = 0
-    eval_axes_per_iter_table = pd.DataFrame()
-    for iteration in range(max_iterations):
-        print(f"\n=== Iteration {iteration + 1}/{max_iterations} ===\n")
-        if args.eval_only:
-            max_iterations = 1
-            if args.axes:
-                eval_axes = list(args.axes)
-                filtered_eval_axes, metrics, eval_results, scoring_logs, cohns_kappa = (
-                    evaluate_axes(eval_axes, df, args)
-                )
-            else:
-                args.early_stopping = early_stopping
-                eval_axes = load_experiment(args.save_dir, tag, args)
-                filtered_eval_axes, metrics, eval_results, scoring_logs, cohns_kappa = (
-                    evaluate_axes(eval_axes, df, args)
-                )
-                eval_results.to_json(
-                    f"{args.save_dir}/{save_str}/eval_results_{iteration}.json",
-                    orient="records",
-                )
-        else:
-            # Step 1: Propose Axes
-            if iteration == 0:
-                if not args.axes:
-                    proposal_df = df.sample(
-                        args.num_proposal_samples
-                    )  # Use the entire dataset initially
-                    all_axis_descriptions, proposer_results = propose_axes(
-                        proposal_df, args
-                    )
-            else:
-                # Use misclassified samples from previous iteration
-                proposal_df = get_misclassified_samples(
-                    pref_train_results, mm_train_results, df, list(args.models), args
-                )
-                proposal_df = proposal_df.sample(
-                    min(args.num_proposal_samples, len(proposal_df))
-                )
-                if proposal_df.empty:
-                    print("No misclassified samples. Stopping iterations.")
-                    break
-                all_axis_descriptions, proposer_results = propose_axes_iteration(
-                    proposal_df, args, eval_axes, iteration=iteration
-                )
-
-            # Step 2: Reduce Axes (start with eval axes if provided)
-            if not (args.axes and iteration == 0):
-                reduced_eval_axes, reducer_results = reduce_axes(
-                    all_axis_descriptions, proposer_results, args, save_str, eval_axes
-                )
-                reducer_results.to_json(
-                    f"{args.save_dir}/{save_str}/reducer_results-{iteration}.json",
-                    orient="records",
-                )
-                print(f"adding {reduced_eval_axes} to {eval_axes}")
-                eval_axes = list(set(eval_axes + reduced_eval_axes))
-            else:
-                prev_eval_axes = eval_axes
-                eval_axes = list(args.axes)
-            print("+++++++++++++++++++++++++++++++++++++++++++++")
-            print("+++++++++++++++++++++++++++++++++++++++++++++")
-            print("Eval Axes: ", "\n".join(eval_axes))
-            print("+++++++++++++++++++++++++++++++++++++++++++++")
-            print("+++++++++++++++++++++++++++++++++++++++++++++")
-            if args.proposer_only:
-                exit(0)
-
-            # Step 3: Evaluate Axes
-            # Evaluate on the entire dataset (df)
-            args.early_stopping = early_stopping
-            filtered_eval_axes, metrics, eval_results, scoring_logs, cohns_kappa = (
-                evaluate_axes(eval_axes, df, args)
-            )
-            eval_results.to_json(
-                f"{args.save_dir}/{save_str}/eval_results_{iteration}.json",
-                orient="records",
-            )
-
-        if args.filter or args.filter_mm_only:
-            # # Step 3.5: Filter Axes
-            filtered_eval_axes, removed_axes = filter_axes(
-                filtered_eval_axes, prev_eval_axes, eval_results, args
-            )
-
-        prev_eval_axes = filtered_eval_axes
-
- 
-
-        # # Step 4: Train LR Models for both mm and preference
-        preference_results = df.copy()
-        preference_results["avg_final_scores"] = preference_results["preference"].apply(lambda x: get_score(get_pref_score(x, args)))
-        preference_results["axis"] = "preference"
-        test_preference_results = heldout_df.copy()
-        test_preference_results["avg_final_scores"] = test_preference_results["preference"].apply(lambda x: get_score(get_pref_score(x, args)))
-        test_preference_results["axis"] = "preference"
-
-        print(f"Filtered Eval Axes: {filtered_eval_axes}")
-        (
-            pref_accuracy,
-            mm_accuracy,
-            pref_train_results,
-            mm_train_results,
-            filtered_eval_axes,
-            pref_feature_importance,
-            mm_feature_importance,
-            mm_feature_order,
-        ) = train_lr_models(
-            eval_results,
-            preference_results,
-            eval_results,
-            preference_results,
-            args,
-            filtered_eval_axes,
-            iteration + 1,
-            save_str,
-            "train",
-            cohns_kappa,
-        )
-
-        # convert into numbered list for vibes
-        eval_axes_str = "\n".join(
-            [f"{i+1}. {axis}" for i, axis in enumerate(eval_axes)]
-        )
-        filtered_eval_axes_str = "\n".join(
-            [f"{i+1}. {axis}" for i, axis in enumerate(filtered_eval_axes)]
-        )
-        eval_axes_per_iter_table = pd.concat(
-            [
-                eval_axes_per_iter_table,
-                pd.DataFrame(
-                    {
-                        "iteration": iteration + 1,
-                        "eval_axes": eval_axes_str,
-                        "filtered_eval_axes": filtered_eval_axes_str,
-                    },
-                    index=[0],
-                ),
+        vibe_df = vibe_df.merge(
+            ranker_2[
+                ["question", models[0], models[1], "preference", "ranker_output_2"]
             ],
-            axis=0,
+            on=["question", models[0], models[1], "preference"],
+            how="left",
         )
-        # log train metrics
-        wandb.log(
+        vibe_df["ranker_output_2"] = vibe_df["ranker_output_2"].apply(
+            ranker_postprocess
+        )
+        vibe_df["position_matters"] = (
+            vibe_df["ranker_output_1"] != -1 * vibe_df["ranker_output_2"]
+        )
+        vibe_df["score"] = vibe_df.apply(
+            lambda row: row["ranker_output_1"] if not row["position_matters"] else 0,
+            axis=1,
+        )
+        wandb.summary["prop_position_collisions"] = vibe_df["position_matters"].mean()
+    else:
+        vibe_df["score"] = vibe_df["ranker_output_1"]
+
+    return vibe_df
+
+
+def create_reduce_prompt(num_reduced_axes: int):
+    return f"""Below is a list of properties that are found in LLM outputs. I would like to summarize this list to AT MOST {num_reduced_axes} representative properties with concise descriptions. Are there any overarching properties that are present in a large number of the properties?
+
+Here is the list of properties:
+{{differences}}
+
+Your final list of simplified properties should be human interpretable. The final list of descriptions should be unambiguous and concise. For example, 
+* "uses a lot of emojis and markdown" is not a good property because a piece of text can have emojies but not markdown, and vice versa. This should be split into two properties: "uses a lot of emojis" and "uses markdown".
+* if two properties are "uses markdown" and "utilizes extensive formatting", text which contains one likely contains the other and should be combined into a single property "uses extensive markdown formatting".
+* "focus on historical context" is not a good property because it is too vague. A better property would be "mentions specific historical events".
+
+Each property should be <= 10 words. Order your final list of properties by how much they are seen in the data. Your response should be a list deliniated with "-"
+"""
+
+
+def propose_vibes(
+    df: pd.DataFrame, models: List[str], num_proposal_samples: int = 30, num_final_vibes: int = 10, batch_size: int = 5
+):
+    proposer_prompt_freeform = """
+You are a machine learning researcher trying to figure out the major differences between the behaviors of two llms by finding differences in their responses to the same set of questions and seeing if these differences correspond with user preferences. Write down as many differences as you can find between the two outputs. Please format your differences as a list of properties that appear more in one output than the other.
+
+Below are multiple sets of questions and responses, separated by dashed lines. For each set, analyze the differences between Model 1 and Model 2. What properties are seen in the responses from Model 1 that are not seen in the responses from Model 2? What properties are seen in the responses from Model 2 that are not seen in the responses from Model 1?
+
+{combined_responses}
+
+The format should be a list of properties that appear more in one output than the other in the format of a short description of the property. An example of a possible output is,
+- "conversational language"
+- "friendly tone"
+- "code that optimizes for runtime"
+- "uses a lot of emojis"
+- "stories presented in the third person"
+
+Note that this example is not at all exhaustive, but rather just an example of the format. Consider differences on many different axes such as tone, language, structure, content, safety, and any other axis that you can think of. 
+    
+Remember that these properties should be human interpretable and that the differences should be concise (<= 10 words), substantive and objective. Write down as many properties as you can find. Do not explain which model has which property, simply describe the property.
+If there are no substantive differences between the outputs, please respond with only "No differences found."
+"""
+    # Create combined responses to get in LOTUS format
+    df["single_combined_response"] = df.apply(
+        lambda row: (
+            f"User prompt:\n{row['question']}\n\n"
+            f"Model 1:\n{row[models[0]]}\n\n"
+            f"Model 2:\n{row[models[1]]}"
+        ),
+        axis=1,
+    )
+    proposer_df = df.sample(num_proposal_samples, random_state=42).reset_index(
+        drop=True
+    )
+    proposer_df["batch_id"] = proposer_df.index // batch_size
+    proposer_df["combined_responses"] = proposer_df.groupby("batch_id")[
+        "single_combined_response"
+    ].transform(lambda x: "\n-------------\n".join(x))
+    proposer_df = proposer_df.drop_duplicates("batch_id")
+    proposer_df = proposer_df.sem_map(
+        proposer_prompt_freeform, return_raw_outputs=True, suffix="differences"
+    )
+
+    proposer_df["differences"] = proposer_df["differences"].apply(proposer_postprocess)
+    wandb.log({"Vibe Proposer/proposer_results": wandb.Table(dataframe=proposer_df)})
+    results = proposer_df[proposer_df["differences"].apply(lambda x: len(x) > 0)]
+    results = results.explode("differences").reset_index(drop=True)
+
+    # Cluster and reduce axes
+    # TODO: fix groupby_clusterid for sem_agg
+    results = results.sem_index("differences", "differences_index").sem_cluster_by(
+        "differences", 1
+    )
+    summaries = results.sem_agg(
+        create_reduce_prompt(num_final_vibes),
+        suffix="reduced axes",
+    )
+    summaries["reduced axes parsed"] = summaries["reduced axes"].apply(parse_axes)
+    vibes = summaries.explode("reduced axes parsed")["reduced axes parsed"].to_list()
+    print("Vibes:\n" + "\n".join(vibes))
+    return vibes
+
+def get_vibe_question_types(vibe_df: pd.DataFrame, batch_size: int = 50):
+    """Describe what types of questions result in high scores for a given vibe."""
+    # Create a copy of the filtered dataframe to avoid warnings
+    filtered_vibe_df = vibe_df[vibe_df["score"].abs() > 0.0].copy()
+    vibin_questions = filtered_vibe_df.sort_values(["vibe", "score"], ascending=[True, False])
+
+    prompt = """You are a machine learning researcher trying to discover what types of questions result in a model exhibiting a certain behavior. Given the following behavior and a list of questions along with a score of how much the model exhibits the behavior on that question, describe what types of questions result in the model exhibiting the behavior. Each score is between 1 and 5, where 1 is does not exhibit the behavior at all, and 5 is exhibits the behavior completely.
+
+{input_text}
+
+Please respond with a 1 sentence description of what types of questions result in the model exhibiting the behavior and what types of questions result in the model not exhibiting the behavior. This should be a single sentence that is human interpretable and concise, such that I can create a diverse set of new questions that result in the model exhibiting the behavior as well as new questions that result in the model not exhibiting the behavior.
+
+Format your response in the following format:
+Question types which exhibit the behavior: <description>
+Question types which do not exhibit the behavior: <description>
+"""
+    new_df = []
+    for vibe in vibin_questions["vibe"].unique():
+        single_vibe_df = vibin_questions[vibin_questions["vibe"] == vibe].copy()
+        # Sample and create input text for each vibe
+        sampled_df = single_vibe_df.sample(min(batch_size, len(single_vibe_df)))
+        input_texts = sampled_df.apply(
+            lambda row: f"Behavior: {row['vibe']}\nQuestion: {row['question']}\nScore: {row['score']}",
+            axis=1
+        ).tolist()
+        input_text = "\n-------------\n".join(input_texts)
+        new_df.append({
+            "vibe": vibe,
+            "input_text": input_text
+        })
+    
+    new_df = pd.DataFrame(new_df)
+    vibe_question_types = new_df.sem_map(
+        prompt, return_raw_outputs=True, suffix="vibe_question_types"
+    )
+    return vibe_question_types
+
+
+def get_examples_for_vibe(vibe_df: pd.DataFrame, vibe: str, models: List[str], num_examples: int = 5):
+    """Get example pairs where the given vibe was strongly present."""
+    vibe_examples = vibe_df[(vibe_df["vibe"] == vibe) & (vibe_df["score"].abs() > 0.0)]
+    examples = []
+    for _, row in vibe_examples.head(num_examples).iterrows():
+        examples.append(
             {
-                "iteration": iteration + 1,
-                "pref_accuracy": pref_accuracy,
-                "vibes": wandb.Table(dataframe=eval_axes_per_iter_table),
-                "mm_accuracy": mm_accuracy,
+                "prompt": row["question"],
+                "output_a": row[models[0]],
+                "output_b": row[models[1]],
+                "score": row["score"],
+                "core_output": row["raw_outputranker_output_1"],
             }
         )
-        if pref_accuracy > max_pref_acc:
-            max_pref_acc = pref_accuracy
-            max_iteration = iteration
-        wandb.run.summary["max_mm_accuracy"] = max_mm_acc
-        wandb.run.summary["max_pref_accuracy"] = max_pref_acc
-        wandb.run.summary["max_iteration"] = max_iteration + 1
-        wandb.run.summary["dataset_len"] = len(df)
-        wandb.run.summary["heldout_dataset_len"] = len(heldout_df)
-        wandb.run.summary["eval_axes"] = eval_axes
-        # wandb.run.summary["seperability"] = seperability
+    return examples
 
-        if args.eval_every_iteration:
-            # eval on test set
-            args.early_stopping = False
-            _, test_metrics, test_eval_results, test_scoring_logs, test_cohns_kappa = (
-                evaluate_axes(eval_axes, heldout_df, args)
-            )
 
-            (
-                test_pref_accuracy,
-                test_mm_accuracy,
-                test_pref_train_results,
-                test_mm_train_results,
-                _,
-                _,
-                _,
-                _,
-            ) = train_lr_models(
-                eval_results,
-                preference_results,
-                test_eval_results,
-                test_preference_results,
-                args,
-                filtered_eval_axes,
-                iteration + 1,
-                save_str,
-                "test",
-                test_cohns_kappa,
-            )
+def create_gradio_app(vibe_df: pd.DataFrame, models: List[str], coef_df: pd.DataFrame, corr_plot: go.Figure, vibe_question_types: pd.DataFrame):
+    import gradio as gr
 
-            (
-                test_easy_pref_accuracy,
-                test_easy_mm_accuracy,
-                test_easy_pref_train_results,
-                test_easy_mm_train_results,
-                _,
-                _,
-                _,
-                _,
-            ) = train_lr_models(
-                test_eval_results,
-                test_preference_results,
-                test_eval_results,
-                test_preference_results,
-                args,
-                filtered_eval_axes,
-                iteration + 1,
-                save_str,
-                "test_id",
-                test_cohns_kappa,
-            )
+    # Create the plots
+    agg_df = (
+        vibe_df.groupby("vibe")
+        .agg({"pref_score": "mean", "score": "mean"})
+        .reset_index()
+    )
 
-            # save eval_results and test_eval_results
-            eval_results.to_json(
-                f"{args.save_dir}/{save_str}/eval_results_{iteration}.json",
-                orient="records",
-            )
-            test_eval_results.to_json(
-                f"{args.save_dir}/{save_str}/test_eval_results_{iteration}.json",
-                orient="records",
-            )
-            preference_results.to_json(
-                f"{args.save_dir}/{save_str}/preference_results.json", orient="records"
-            )
-            test_preference_results.to_json(
-                f"{args.save_dir}/{save_str}/test_preference_results.json",
-                orient="records",
-            )
+    # Create plots and convert them to HTML strings
+    heuristics_plot = create_side_by_side_plot(
+        df=agg_df,
+        y_col="vibe",
+        x_cols=["score", "pref_score"],
+        titles=("Model Identity", "Preference Prediction"),
+        main_title="Vibe Heuristics",
+        models=models,
+    )
 
-            # Step 5: Check for Convergence
-            if mm_accuracy >= 0.99:
-                print(
-                    f"Convergence achieved with MM accuracy {pref_accuracy:.2f}. Stopping iterations."
-                )
-                break
-            # Optionally log iteration metrics
-            wandb.log(
-                {
-                    "iteration": iteration + 1,
-                    "test_pref_accuracy": test_pref_accuracy,
-                    "test_mm_accuracy": test_mm_accuracy,
-                    "test_id_pref_accuracy": test_easy_pref_accuracy,
-                    "test_id_mm_accuracy": test_easy_mm_accuracy,
-                }
-            )
-            wandb.run.summary["test_mm_accuracy"] = test_mm_accuracy
-            wandb.run.summary["test_pref_accuracy"] = test_pref_accuracy
-            wandb.run.summary["test_id_mm_accuracy"] = test_easy_mm_accuracy
-            wandb.run.summary["test_id_pref_accuracy"] = test_easy_pref_accuracy
+    coef_plot = create_side_by_side_plot(
+        df=coef_df,
+        y_col="vibe",
+        x_cols=["coef_modelID", "coef_preference"],
+        titles=("Model Identity", "Preference Prediction"),
+        main_title="Vibe Model Coefficients",
+        models=models,
+        error_cols=["coef_std_modelID", "coef_std_preference"],
+    )
 
-    if args.filter_p_values:
-        mm_eval_axes = mm_feature_importance[
-            (mm_feature_importance["p_value"] < 0.05)
-            & (mm_feature_importance["score"].abs() > 0.05)
-        ]["feature"].tolist()
-        pref_eval_axes = pref_feature_importance[
-            (pref_feature_importance["p_value"] < 0.05)
-            & (pref_feature_importance["score"].abs() > 0.05)
-        ]["feature"].tolist()
-        if args.filter_mm_only:
-            final_eval_axes = mm_eval_axes
-        elif args.filter_pref_only:
-            final_eval_axes = pref_eval_axes
-        else:
-            # get intersection of both
-            final_eval_axes = list(set(mm_eval_axes).intersection(set(pref_eval_axes)))
-    elif args.num_final_eval:
-        # select by LARS order
-        final_eval_axes = mm_feature_order[: args.num_final_eval]
-        # # select by magnitude of coeff instead
-        # mm_feature_importance["abs_coreff"] = mm_feature_importance["coefficient"].abs()
-        # mm_feature_importance = mm_feature_importance.sort_values("abs_coreff", ascending=False)
-        # # remove any feature row that is const
-        # final_eval_axes = mm_feature_importance["feature"].tolist()[:args.num_final_eval]
+    def show_examples(vibe):
+        examples = get_examples_for_vibe(vibe_df, vibe, models)
+        markdown = f"### What sort of prompts elicit the vibe?\n"
+        markdown += f"{vibe_question_types[vibe_question_types['vibe'] == vibe]['vibe_question_types'].values[0]}\n\n"
+        markdown += "---\n\n"
+        for i, ex in enumerate(examples, 1):
+            markdown += f"### Example {i} ({models[0] if ex['score'] > 0 else models[1]} vibe)\n"
+            markdown += f"**Prompt:**\n{ex['prompt']}\n\n"
+            markdown += f"**{models[0]}:**\n{ex['output_a']}\n\n"
+            markdown += f"**{models[1]}:**\n{ex['output_b']}\n\n"
+            markdown += f"**Ranker Output:**\n{ex['core_output']}\n\n"
+            markdown += "---\n\n"
+        return markdown
+
+    with gr.Blocks() as app:
+        gr.Markdown("# <center>It's all about the ✨vibes✨</center>")
+
+        with gr.Accordion("Plots", open=True):
+            with gr.Row():
+                gr.Plot(heuristics_plot)
+
+            with gr.Row():
+                gr.Plot(coef_plot)
+
+            with gr.Row():
+                gr.Plot(corr_plot)
+
+        gr.Markdown("## Vibe Examples")
+        vibe_df_w_types = vibe_df.merge(vibe_question_types, on="vibe", how="left")
+        vibe_dropdown = gr.Dropdown(
+            choices=vibe_df_w_types["vibe"].unique().tolist(),
+            label="Select a vibe to see examples",
+        )
+        examples_output = gr.Markdown()
+        vibe_dropdown.change(
+            fn=show_examples, inputs=[vibe_dropdown], outputs=[examples_output]
+        )
+
+    return app
+
+
+def create_vibe_correlation_plot(vibe_df: pd.DataFrame, models: List[str]):
+    """Creates a correlation matrix plot for vibe scores."""
+    # Pivot the dataframe to get vibe scores in columns
+    vibe_pivot = vibe_df.pivot_table(
+        index=["question", models[0], models[1]], columns="vibe", values="score"
+    ).reset_index()
+
+    # Calculate correlation matrix for just the vibe scores
+    vibe_cols = vibe_pivot.columns[3:]  # Skip the index columns
+    corr_matrix = vibe_pivot[vibe_cols].corr()
+
+    # Create heatmap
+    fig = go.Figure(
+        data=go.Heatmap(
+            z=corr_matrix,
+            x=corr_matrix.columns,
+            y=corr_matrix.columns,
+            colorscale="RdBu",
+            zmid=0,
+            text=np.round(corr_matrix, 2),
+            texttemplate="%{text}",
+            textfont={"size": 10},
+            hoverongaps=False,
+        )
+    )
+
+    fig.update_layout(
+        title="Vibe Score Correlations",
+        xaxis_tickangle=-45,
+        width=800,
+        height=800,
+    )
+
+    return fig
+
+
+def main(
+    data_path: str,
+    models: List[str],
+    num_proposal_samples: int = 30,
+    num_final_vibes: int = 10,
+    test: bool = False,
+    single_position_rank: bool = False,
+    project_name: str = "vibecheck",
+    proposer_only: bool = False,
+    no_holdout_set: bool = False,
+    gradio: bool = False,
+):
+    """Run VibeCheck analysis to identify and analyze behavioral differences between two language models.
+
+    Args:
+        data_path (str): Path to CSV file containing model outputs. Must include columns for model responses 
+            and a 'preference' column indicating which model output was preferred.
+        models (List[str]): List of two model names to compare. These should match the column names in the CSV.
+        num_proposal_samples (int, optional): Number of samples to use when proposing vibes. Defaults to 30.
+        num_final_vibes (int, optional): Maximum number of vibes to use in final analysis. Defaults to 10.
+        test (bool, optional): If True, runs analysis on a small subset of data for testing. Defaults to False.
+        single_position_rank (bool, optional): If True, only ranks model outputs in one position order.
+            Faster but may introduce position bias. Defaults to False.
+        project_name (str, optional): Name of the Weights & Biases project. Defaults to "vibecheck".
+        proposer_only (bool, optional): If True, only runs the vibe proposal step without analysis. Defaults to False.
+        no_holdout_set (bool, optional): If True, uses all data for training without a test set. Defaults to False.
+        gradio (bool, optional): If True, launches a Gradio interface after analysis. Defaults to False.
+
+    Raises:
+        ValueError: If 'preference' column is not found in the input CSV file.
+    """
+    # Initialize wandb
+    wandb.init(project=project_name, name=f"{models[0]}_vs_{models[1]}", save_code=True)
+
+    output_dir = f"outputs/{data_path.split('/')[-1].replace('.csv', '')}_{models[0]}_vs_{models[1]}"
+    os.makedirs(output_dir, exist_ok=True)
+    # Initialize LOTUS
+    cache_config = CacheConfig(cache_type=CacheType.SQLITE, max_size=1000)
+    cache = CacheFactory.create_cache(cache_config)
+    lm = LM(model="gpt-4o", cache=cache)
+    rm = SentenceTransformersRM(model="intfloat/e5-base-v2")
+    lotus.settings.configure(lm=lm, rm=rm, enable_cache=True)
+
+    # Load and preprocess data
+    df = pd.read_csv(data_path)
+    if test:
+        df = df.sample(100, random_state=42)
+    if "preference" not in df.columns:
+        raise ValueError(
+            "Preference column not found in dataframe. Run get_preference_labels.py first"
+        )
+
+    df = df[df["preference"].isin(models)].reset_index(drop=True)
+
+    print(f"Preference Counts: {df['preference'].value_counts().to_dict()}")
+    wandb.summary["preference_counts"] = df["preference"].value_counts().to_dict()
+    wandb.summary["data_size"] = len(df)
+
+    # Create bar plot of preference distribution
+    pref_dist = df["preference"].value_counts()
+    fig = go.Figure(
+        data=[go.Bar(x=pref_dist.index, y=pref_dist.values, marker_color="#2ecc71")]
+    )
+    fig.update_layout(
+        title="Model Preference Distribution",
+        xaxis_title="Model",
+        yaxis_title="Count",
+        template="plotly_white",
+    )
+    wandb.log({"preference_distribution": wandb.Html(fig.to_html())})
+    fig.write_html(os.path.join(output_dir, "preference_distribution.html"))
+    vibes = propose_vibes(
+        df,
+        models,
+        num_proposal_samples=num_proposal_samples,
+        num_final_vibes=num_final_vibes,
+    )
+
+    # Log vibes to wandb
+    vibes_df = pd.DataFrame({"vibes": vibes})
+    wandb.log({"vibes": wandb.Table(dataframe=vibes_df)})
+    vibes_df.to_csv(os.path.join(output_dir, "vibes.csv"), index=False)
+
+    if proposer_only:
+        return
+
+    # Rank axes
+    lm = LM(model="gpt-4o-mini", cache=cache)
+    lotus.settings.configure(lm=lm, enable_cache=True)
+    if test:
+        vibe_df = rank_axes(
+            vibes[:3], df, models, single_position_rank=single_position_rank
+        )
     else:
-        final_eval_axes = eval_axes
+        vibe_df = rank_axes(
+            vibes, df, models, single_position_rank=single_position_rank
+        )
 
-    print("^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^")
-    print("^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^")
-    print(f"Final Eval Axes: {final_eval_axes}")
-    print("^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^")
-    print("^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^")
-    wandb.summary["final_eval_axes"] = final_eval_axes
-    wandb.summary["all_eval_axes"] = eval_axes
+    # Compute preference alignment
+    vibe_df["preference_feature"] = vibe_df["preference"].apply(
+        lambda x: get_pref_score(x, models)
+    )
+    vibe_df["pref_score"] = vibe_df["score"] * vibe_df["preference_feature"]
 
+    wandb.log({"Vibe Scoring/ranker_results": wandb.Table(dataframe=vibe_df)})
+    vibe_df.to_csv(os.path.join(output_dir, "vibe_df.csv"), index=False)
+
+    agg_df = (
+        vibe_df.groupby("vibe")
+        .agg({"pref_score": "mean", "score": "mean"})
+        .reset_index()
+    )
+    wandb.log({"summary": wandb.Table(dataframe=agg_df)})
+
+    # Get the aggregated data and parse descriptions
+    agg_df = (
+        vibe_df.groupby("vibe")
+        .agg({"pref_score": "mean", "score": "mean"})
+        .reset_index()
+    )
+
+    # First plot (vibe heuristics)
+    model_vibe_scores_plot = create_side_by_side_plot(
+        df=agg_df,
+        y_col="vibe",
+        x_cols=["score", "pref_score"],
+        titles=("Model Identity", "Preference Prediction"),
+        main_title="Vibe Heuristics",
+        models=models,
+    )
+    wandb.log({"Vibe Plots/model_vibe_scores_plot": wandb.Html(model_vibe_scores_plot.to_html())})
+    model_vibe_scores_plot.write_html(os.path.join(output_dir, "model_vibe_scores_plot.html"))
+    # Filter out vibes with low separation or preference
+    vibe_df = vibe_df[vibe_df["score"].abs() > 0.05]
+    vibe_df = vibe_df[vibe_df["pref_score"].abs() > 0.05]
+    print(
+        f"Retained {len(vibe_df.drop_duplicates('vibe'))} vibes with non-trivial separation/preference."
+    )
+    print("Remaining vibes:\n" + "\n".join(vibe_df["vibe"].unique()))
+
+    # Train Preference Prediction and Model Identity Classification Models
+    feature_df, X_pref, y_pref, y_identity = get_feature_df(vibe_df)
     (
-        pref_accuracy,
-        mm_accuracy,
-        pref_train_results,
-        mm_train_results,
-        filtered_eval_axes,
-        pref_feature_importance,
-        mm_feature_importance,
-        mm_feature_order,
-    ) = train_lr_models(
-        eval_results,
-        preference_results,
-        eval_results,
-        preference_results,
-        args,
-        final_eval_axes,
-        "final",
-        save_str,
-        "train",
-        cohns_kappa,
+        preference_model,
+        preference_coef_df,
+        preference_accuracy_test,
+        preference_acc_std,
+    ) = train_and_evaluate_model(
+        X_pref,
+        y_pref,
+        feature_df.columns,
+        split_train_test=not no_holdout_set,
+        solver="elasticnet",
+    )
+    identity_model, identity_coef_df, identity_accuracy_test, identity_acc_std = (
+        train_and_evaluate_model(
+            X_pref,
+            y_identity,
+            feature_df.columns,
+            split_train_test=not no_holdout_set,
+            solver="elasticnet",
+        )
     )
 
-    # convert into numbered list for vibes
-    eval_axes_str = "\n".join([f"{i+1}. {axis}" for i, axis in enumerate(eval_axes)])
-    filtered_eval_axes_str = "\n".join(
-        [f"{i+1}. {axis}" for i, axis in enumerate(final_eval_axes)]
-    )
-    eval_axes_per_iter_table = pd.concat(
-        [
-            eval_axes_per_iter_table,
-            pd.DataFrame(
-                {
-                    "iteration": iteration + 1,
-                    "eval_axes": eval_axes_str,
-                    "filtered_eval_axes": filtered_eval_axes_str,
-                },
-                index=[0],
-            ),
-        ],
-        axis=0,
-    )
-    # log train metrics
     wandb.log(
         {
-            "iteration": iteration + 1,
-            "pref_accuracy": pref_accuracy,
-            "vibes": wandb.Table(dataframe=eval_axes_per_iter_table),
-            "mm_accuracy": mm_accuracy,
+            "preference_model_test_accuracy": preference_accuracy_test,
+            "identity_model_test_accuracy": identity_accuracy_test,
+            "preference_model_test_accuracy_std": preference_acc_std,
+            "identity_model_test_accuracy_std": identity_acc_std,
         }
     )
 
-    # eval on test set
-    args.early_stopping = False
-    _, test_metrics, test_eval_results, test_scoring_logs, test_cohns_kappa = (
-        evaluate_axes(eval_axes, heldout_df, args)
-    )
+    # Merge coefficient data
+    coef_df = identity_coef_df.merge(
+        preference_coef_df, on="vibe", suffixes=("_modelID", "_preference")
+    ).sort_values("coef_preference", ascending=False)
 
-    (
-        test_pref_accuracy,
-        test_mm_accuracy,
-        test_pref_train_results,
-        test_mm_train_results,
-        _,
-        _,
-        _,
-        _,
-    ) = train_lr_models(
-        eval_results,
-        preference_results,
-        test_eval_results,
-        test_preference_results,
-        args,
-        final_eval_axes,
-        "final",
-        save_str,
-        "test",
-        test_cohns_kappa,
+    # Second plot (coefficients)
+    coef_plot = create_side_by_side_plot(
+        df=coef_df,
+        y_col="vibe",
+        x_cols=["coef_modelID", "coef_preference"],
+        titles=("Model Identity", "Preference Prediction"),
+        main_title="Vibe Model Coefficients",
+        models=models,
+        error_cols=["coef_std_modelID", "coef_std_preference"],
     )
+    wandb.log({"Vibe Plots/model_vibe_coef_plot": wandb.Html(coef_plot.to_html())})
+    coef_plot.write_html(os.path.join(output_dir, "model_vibe_coef_plot.html"))
+    coef_df.to_csv(os.path.join(output_dir, "vibecheck_coefficients.csv"), index=False)
 
-    (
-        test_easy_pref_accuracy,
-        test_easy_mm_accuracy,
-        test_easy_pref_train_results,
-        test_easy_mm_train_results,
-        _,
-        _,
-        _,
-        _,
-    ) = train_lr_models(
-        test_eval_results,
-        test_preference_results,
-        test_eval_results,
-        test_preference_results,
-        args,
-        final_eval_axes,
-        "final",
-        save_str,
-        "test_id",
-        test_cohns_kappa,
-    )
+    # Log final data
+    wandb.log({"coefficient_data": wandb.Table(dataframe=coef_df)})
 
-    # save eval_results and test_eval_results
-    eval_results.to_json(
-        f"{args.save_dir}/{save_str}/eval_results_final.json", orient="records"
-    )
-    test_eval_results.to_json(
-        f"{args.save_dir}/{save_str}/test_eval_results_final.json", orient="records"
-    )
-    preference_results.to_json(
-        f"{args.save_dir}/{save_str}/preference_results.json", orient="records"
-    )
-    test_preference_results.to_json(
-        f"{args.save_dir}/{save_str}/test_preference_results.json", orient="records"
-    )
+    # After creating vibe_df and before training models, add:
+    corr_plot = create_vibe_correlation_plot(vibe_df, models)
+    wandb.log({"Vibe Scoring/vibe_correlations": wandb.Html(corr_plot.to_html())})
+    corr_plot.write_html(os.path.join(output_dir, "vibe_correlations.html"))
 
-    wandb.summary["final_test_pref_accuracy"] = test_pref_accuracy
-    wandb.summary["final_test_mm_accuracy"] = test_mm_accuracy
-    wandb.summary["final_test_id_pref_accuracy"] = test_easy_pref_accuracy
-    wandb.summary["final_test_id_mm_accuracy"] = test_easy_mm_accuracy
+    vibe_question_types = get_vibe_question_types(vibe_df)
+    wandb.log({"Vibe Scoring/vibe_question_types": wandb.Table(dataframe=vibe_question_types)})
+    vibe_question_types.to_csv(os.path.join(output_dir, "vibe_question_types.csv"), index=False)
+    # Close wandb run
+    wandb.finish()
+
+    if gradio:
+        print("\nLaunching Gradio app...")
+        app = create_gradio_app(vibe_df, models, coef_df, corr_plot, vibe_question_types)
+        app.launch(share=True)
+
+    return {"output_dir": output_dir,
+            "model_vibe_scores_plot": model_vibe_scores_plot,
+            "score_dist_plot": coef_plot,
+            "vibe_question_types": vibe_question_types,
+            "vibe_df": vibe_df,
+            "agg_df": agg_df,
+            "corr_plot": corr_plot,
+            }
 
 
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser(
+        description="Run VibeCheck analysis on model outputs."
+    )
+    parser.add_argument(
+        "--data_path",
+        type=str,
+        required=True,
+        help="Path to the CSV file containing model outputs",
+    )
+    parser.add_argument(
+        "--models",
+        nargs="+",
+        required=True,
+        help="Models to compare",
+    )
+    parser.add_argument(
+        "--num_proposal_samples",
+        type=int,
+        default=30,
+        help="Number of samples to use for proposing vibes",
+    )
+    parser.add_argument(
+        "--project", type=str, default="vibecheck", help="Wandb project name"
+    )
+    parser.add_argument("--test", action="store_true", help="Run in test mode")
+    parser.add_argument(
+        "--single_position_rank",
+        action="store_true",
+        help="Don't rerun ranker with different positions, faster but may lead to position bias",
+    )
+    parser.add_argument(
+        "--num_final_vibes",
+        type=int,
+        default=10,
+        help="Number of final vibes to use for analysis",
+    )
+    parser.add_argument(
+        "--solver",
+        type=str,
+        default="elasticnet",
+        help="Solver to use for logistic regression (standard, lasso, elasticnet)",
+    )
+    parser.add_argument(
+        "--proposer_only", action="store_true", help="Only run the proposer"
+    )
+    parser.add_argument("--gradio", action="store_true", help="Run the Gradio app")
+    parser.add_argument(
+        "--no_holdout_set", action="store_true", help="Don't split into a holdout set"
+    )
+
+    args = parser.parse_args()
+    main(
+        args.data_path,
+        args.models,
+        args.num_proposal_samples,
+        args.num_final_vibes,
+        args.test,
+        args.single_position_rank,
+        args.project,
+        args.proposer_only,
+        args.no_holdout_set,
+        args.gradio,
+    )
