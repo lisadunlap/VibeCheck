@@ -30,13 +30,13 @@ proposer:
   # Number of samples to use when proposing vibes. Higher numbers will give more comprehensive but slower results.
   num_samples: 30
   model: "gpt-4o"
-  num_vibes_per_iteration: 5 # Number of vibes to propose per iteration.
-  shuffle_positions: true # If true, shuffles the positions of the models in the prompt for finding vibes.
+  # num_vibes_per_iteration: 10 # Number of vibes to propose per iteration.
+  shuffle_positions: false # If true, shuffles the positions of the models in the prompt for finding vibes. This is best when you are using the axis proposal method.
   batch_size: 5 # Number of samples to use for each batch (LLM call) in the vibe proposal.
 
 # Maximum number of vibes to use in final analysis. This limits the number of 
 # behavioral dimensions that will be analyzed.
-num_final_vibes: 10
+num_vibes: null
 
 # If true, runs analysis on a small subset of data for testing purposes.
 test: false

@@ -13,16 +13,27 @@ def parse_bullets(text: str):
     for line in lines:
         if line.strip().startswith("-") or line.strip().startswith("*"):
             bullets.append(line.strip().lstrip("- *").strip())
+        else:
+            bullets.append(line.strip())
     return bullets
 
 
-def create_reduce_prompt(num_reduced_axes: int):
+def create_reduce_prompt(num_reduced_axes: int = 0):
+    if num_reduced_axes == 0:
+        return f"""Below is a list of properties that are found in LLM outputs. I would like to summarize this list to a set of representative properties with clear and concise descriptions that cover the recurring themes in the data. Are there any interesting overarching properties that are present in a large number of the properties? Please return a list of properties that are seen in the data, where each property represents one type of behavior that is seen in the data.
+
+Here is the list of properties:
+{{differences}}
+
+A human should be able to understand the property and its meaning, and this property should provide insight into the model's behavior or personality. Do not include subjective analysis about these properties, simply describe the property. For instance "the model is more advanced in its understanding" and "the model uses historical context" is not a good property because it is too vague and does not provide interesting insight into the model's behavior. Similarly, these properties should be on a per prompt basis, so "the model provides a consistent tone across prompts" or "the model varies its tone from formal to informal" is not a good property because a person could not make a judgement only looking at a single prompt. These properties should be something that a human could reasonably expect to see in the model's output when given new prompts. Order your final list of properties by how much they are seen in the data. Your response should be a list deliniated with "-"
+"""
+
     return f"""Below is a list of properties that are found in LLM outputs. I would like to summarize this list to AT MOST {num_reduced_axes} representative properties with clear and concise descriptions. Are there any interesting overarching properties that are present in a large number of the properties?
 
 Here is the list of properties:
 {{differences}}
 
-A human should be able to understand the property and its meaning, and this property should provide insight into the model's behavior or personality. Do not include subjective analysis about these properties, simply describe the property. For isntance "the model is more advanced in its understanding" is not a good property because it is too vague and does not provide interesting insight into the model's behavior. These properties should be something that a human could reasonably expect to see in the model's output when given new prompts. Order your final list of properties by how much they are seen in the data. Your response should be a list deliniated with "-"
+A human should be able to understand the property and its meaning, and this property should provide insight into the model's behavior or personality. Do not include subjective analysis about these properties, simply describe the property. For instance "the model is more advanced in its understanding" or "the model uses historical context" is not a good property because it is too vague and does not provide interesting insight into the model's behavior. These properties should be something that a human could reasonably expect to see in the model's output when given new prompts. Order your final list of properties by how much they are seen in the data. Your response should be a list deliniated with "-"
 """
 
 def parse_axes(text: str):
@@ -73,40 +84,41 @@ class VibeProposer(VibeProposerBase):
     def propose(
         self,
         df: pd.DataFrame,
-        num_proposal_samples: int = None,
-        batch_size: int = None,
-        current_vibes: List[str] = None,
-        shuffle_positions: bool = None,
-        num_vibes: int = None,
+        current_vibes: List[str] = [],
+        **kwargs
     ) -> Tuple[List[str], pd.DataFrame]:
         """
         Handle dataset preparation and invoke `propose_batch` for each batch.
 
         Args:
             df (pd.DataFrame): The DataFrame containing user questions & responses.
-            num_proposal_samples (int, optional): Number of samples to randomly select. Defaults to config value.
-            batch_size (int, optional): Size of each batch. Defaults to config value.
-            current_vibes (List[str], optional): Existing vibe axes. Defaults to empty list.
-            shuffle_positions (bool, optional): Whether to randomly swap model positions. Defaults to config value.
+            current_vibes (List[str]): Existing vibe axes.
+            **kwargs: Override any config values from proposer section:
+                - num_proposal_samples (int): Number of samples to randomly select
+                - batch_size (int): Size of each batch
+                - shuffle_positions (bool): Whether to randomly swap model positions
+                - num_vibes (int): Number of vibes to return
 
         Returns:
             Tuple[List[str], pd.DataFrame]
         """
-        # Use config values as defaults, override with provided arguments
-        num_proposal_samples = num_proposal_samples if num_proposal_samples is not None else self.config["proposer"].get('num_samples', 30)
-        batch_size = batch_size if batch_size is not None else self.config["proposer"].get('batch_size', 5)
-        current_vibes = current_vibes if current_vibes is not None else []
-        shuffle_positions = shuffle_positions if shuffle_positions is not None else self.config["proposer"].get('shuffle_positions', False)
-        num_vibes = num_vibes if num_vibes is not None else self.config["proposer"].get('num_vibes_per_iteration', 5)
+        # Get configs from self.config and update with any provided kwargs
+        configs = {
+            'num_proposal_samples': self.config["proposer"].num_samples,
+            'batch_size': self.config["proposer"].batch_size,
+            'shuffle_positions': self.config["proposer"].shuffle_positions,
+            'num_vibes': self.config.num_vibes,
+        }
+        configs.update(kwargs)
 
-        proposer_df = df.sample(num_proposal_samples, random_state=42).reset_index(drop=True)
+        proposer_df = df.sample(configs['num_proposal_samples'], random_state=42).reset_index(drop=True)
 
-        proposer_df["batch_id"] = proposer_df.index // batch_size
+        proposer_df["batch_id"] = proposer_df.index // configs['batch_size']
         unique_batches = proposer_df["batch_id"].unique()
 
         batch_df = []
         for batch_id in unique_batches:
-            batch_df.append(self.prepare_batch(proposer_df[proposer_df["batch_id"] == batch_id].copy(), current_vibes, shuffle_positions))
+            batch_df.append(self.prepare_batch(proposer_df[proposer_df["batch_id"] == batch_id].copy(), current_vibes, configs['shuffle_positions']))
         batch_df = pd.concat(batch_df)
 
         if current_vibes:
@@ -126,7 +138,7 @@ class VibeProposer(VibeProposerBase):
         results = batch_df[batch_df["differences"].apply(lambda x: len(x) > 0)]
         results = results.explode("differences").reset_index(drop=True)
 
-        vibes = self.reduce_vibes(results, num_vibes)
+        vibes = self.reduce_vibes(results, configs['num_vibes'])
 
         wandb.log({"Vibe Proposer/proposer_results": wandb.Table(dataframe=results)})
         return vibes, results
@@ -176,14 +188,15 @@ class VibeProposer(VibeProposerBase):
         results = results.sem_index("differences", "differences_index").sem_cluster_by(
             "differences", 1
         )
+        print(f"Number of total differences before reduction: {len(results)}")
         summaries = results.sem_agg(
-            create_reduce_prompt(num_vibes),
+            create_reduce_prompt(0),
             suffix="reduced axes",
         )
         summaries["reduced axes parsed"] = summaries["reduced axes"].apply(parse_axes)
         vibes = summaries.explode("reduced axes parsed")["reduced axes parsed"].to_list()
-        print("Vibes:\n" + "\n".join(vibes))
-        return vibes
+        print(f"Number of total differences after reduction: {len(vibes)}")
+        return vibes[:num_vibes]
 
 # def propose_vibes(
 #     df: pd.DataFrame,

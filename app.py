@@ -17,7 +17,7 @@ import messin_around.single_model as single_model
 import main as multi_model
 
 # turn wandb off
-os.environ["WANDB_DISABLED"] = "true"
+# os.environ["WANDB_DISABLED"] = "true"
 
 
 def run_single_vibecheck(
@@ -57,7 +57,7 @@ def run_single_vibecheck(
     )
     return result
 
-
+from omegaconf import OmegaConf
 def run_multi_vibecheck(
     csv_file: str,
     models: List[str],
@@ -86,19 +86,32 @@ def run_multi_vibecheck(
     Returns:
         A dictionary of results containing plots, dataframes, and analysis results.
     """
+    base_config = OmegaConf.load("configs/base.yaml")
+    base_config.models = models
+    base_config.proposer.num_samples = num_proposal_samples
+    base_config.num_final_vibes = num_final_vibes
+    base_config.data_path = csv_file
+    base_config.test = test_mode
+    base_config.project_name = project_name
+    base_config.proposer_only = proposer_only
+    base_config.ranker.single_position_rank = single_position_rank
+    base_config.ranker.no_holdout_set = no_holdout_set
+    print(base_config)
+
     # Call the multi-model pipeline
-    result = multi_model.main(
-        data_path=csv_file,
-        models=models,
-        test=test_mode,
-        project_name=project_name,
-        proposer_only=proposer_only,
-        single_position_rank=single_position_rank,
-        no_holdout_set=no_holdout_set,
-        gradio=False,  # We'll handle Gradio UI in this file
-        num_proposal_samples=num_proposal_samples,
-        num_final_vibes=num_final_vibes,
-    )
+    result = multi_model.main(base_config)
+    # result = multi_model.main(
+    #     data_path=csv_file,
+    #     models=models,
+    #     test=test_mode,
+    #     project_name=project_name,
+    #     proposer_only=proposer_only,
+    #     single_position_rank=single_position_rank,
+    #     no_holdout_set=no_holdout_set,
+    #     gradio=False,  # We'll handle Gradio UI in this file
+    #     num_proposal_samples=num_proposal_samples,
+    #     num_final_vibes=num_final_vibes,
+    # )
 
     return result
 
@@ -133,7 +146,7 @@ def create_vibecheck_ui():
                         label="Upload CSV for Single Model", file_types=[".csv"]
                     )
                     gr.Examples(
-                        examples=["data/friendly_and_cold_sample.csv"],
+                        examples=["data/friendly_and_cold_sample.csv", "data/cnndm_with_pref.csv"],
                         inputs=single_csv_file,
                         label="Example CSV",
                     )
@@ -393,7 +406,7 @@ def create_vibecheck_ui():
                         label="Upload CSV for Multi Model", file_types=[".csv"]
                     )
                     gr.Examples(
-                        examples=["data/friendly_and_cold_sample.csv"],
+                        examples=["data/friendly_and_cold_sample.csv", "data/cnndm_with_pref.csv"],
                         inputs=multi_csv_file,
                         label="Example CSV",
                     )
@@ -446,12 +459,14 @@ def create_vibecheck_ui():
                         )
 
                     run_multi_btn = gr.Button("✨VibeCheck✨")
-                    multi_output_md = gr.Markdown()
 
                 # Right Column - Plots
                 with gr.Column(scale=2):
                     multi_output_plot1 = gr.Plot()
                     multi_output_plot2 = gr.Plot()
+
+            with gr.Row():
+                multi_output_md = gr.Markdown()
 
             # Bottom Row - Vibe Examples
             with gr.Row():
@@ -518,8 +533,9 @@ def create_vibecheck_ui():
                 # Summarize
                 summary_text = (
                     "## Multi-Model VibeCheck Results\n"
-                    f"Output directory: {results['output_dir']}\n"
-                    f"**Found {len(results['vibe_df']['vibe'].unique())} vibe(s)**\n"
+                    + f"Output directory: {results['output_dir']}\n\n"
+                    + f"Wandb Run URL: {results['wandb_run_url']}\n\n"
+                    + f"**Found {len(results['vibe_df']['vibe'].unique())} vibe(s)**\n"
                     + "\n".join(
                         [
                             f"- {vibe}"

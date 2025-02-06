@@ -87,6 +87,7 @@ def vibe_discovery(
         models,
         config,
     ).propose(df, current_vibes=current_vibes)
+    print(vibes)
     print("Proposed Vibes:")
     print("* " + "\n* ".join(vibes))
     print("--------------------------------")
@@ -115,7 +116,7 @@ def vibe_validation(
         get_pref_score,
         create_side_by_side_plot,
     )
-    from components.rank import rank_vibes, rank_vibes_embedding
+    from components.rank import VibeRanker, VibeRankerEmbedding
 
     # Change model for ranking
     lm = LM(model=config.ranker.model, cache=cache)
@@ -125,17 +126,20 @@ def vibe_validation(
     # Rank vibes (list of strings)
     vibes_to_rank = vibes[:3] if config.test else vibes
 
-    if config.ranker.embedding_rank:
-        vibe_df = rank_vibes_embedding(
-            vibes_to_rank, 
-            df, 
-            models, 
-            config.ranker.embedding_model)
-    else:
-        vibe_df = rank_vibes(
+    if config.ranker.embedding_rank:    
+        vibe_ranker = VibeRankerEmbedding(config)
+        vibe_df = vibe_ranker.score(
             vibes_to_rank,
             df,
-            models,
+            single_position_rank=config.ranker.single_position_rank,
+        )
+    else:
+        vibe_ranker = VibeRanker(
+            config,
+        )
+        vibe_df = vibe_ranker.score(
+            vibes_to_rank,
+            df,
             single_position_rank=config.ranker.single_position_rank,
         )
 
@@ -370,14 +374,14 @@ def main(config):
             .agg({"pref_score": "mean", "score": "mean"})
             .reset_index()
         )
-        top_vibes = add_running_vibe_df.sort_values("score", ascending=False).head(config.num_final_vibes)
+        top_vibes = add_running_vibe_df.sort_values("score", ascending=False).head(config.num_vibes) if config.num_vibes is not None else add_running_vibe_df
         ranking_df_iteration = running_vibe_df[running_vibe_df["vibe"].isin(top_vibes["vibe"])]
         running_vibes = running_vibe_df["vibe"].unique()
 
         vibes_each_iteration += [{
             "iteration": iteration,
-            "vibes": running_vibe_df["vibe"].unique(),
-            "kept_vibes": top_vibes["vibe"].unique()
+            "vibes": '\n'.join(running_vibe_df["vibe"].unique()),
+            "kept_vibes": '\n'.join(top_vibes["vibe"].unique())
         }]
 
         # 3. Train preference prediction
@@ -398,7 +402,10 @@ def main(config):
 
     wandb.log({"vibes_each_iteration": wandb.Table(dataframe=pd.DataFrame(vibes_each_iteration))})
 
+    # Add this line to get the wandb run URL
+    wandb_run_url = wandb.run.get_url()
     wandb.finish()
+
 
     # Optional: Launch Gradio app
     if config.gradio:
@@ -420,6 +427,7 @@ def main(config):
         "vibe_df": rank_results["vibe_df"],
         "agg_df": rank_results["agg_df"],
         "corr_plot": train_results["corr_plot"],
+        "wandb_run_url": wandb_run_url,
     }
 
 

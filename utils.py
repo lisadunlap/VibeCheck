@@ -11,6 +11,7 @@ from typing import List, Tuple
 from plotly.subplots import make_subplots
 from plotly import graph_objects as go
 from sklearn.utils import shuffle
+from sklearn.preprocessing import StandardScaler
 
 
 def train_and_evaluate_model(
@@ -41,6 +42,10 @@ def train_and_evaluate_model(
         raise ValueError("label must be one of: 'preference', 'identity'")
     feature_names = feature_df.columns
 
+    # Normalize all features once before bootstrapping
+    scaler = StandardScaler()
+    X = scaler.fit_transform(X)
+    
     # Initialize arrays to store bootstrap results
     bootstrap_accuracies = []
     bootstrap_coefs = []
@@ -48,7 +53,7 @@ def train_and_evaluate_model(
     n_samples = len(X)
 
     for _ in range(n_bootstrap):
-        # Create bootstrap sample
+        # Create bootstrap sample from normalized data
         bootstrap_indices = np.random.choice(n_samples, size=n_samples, replace=True)
         X_boot = X[bootstrap_indices]
         y_boot = y[bootstrap_indices]
@@ -60,7 +65,7 @@ def train_and_evaluate_model(
             )
         else:
             X_train, y_train = X_boot, y_boot
-            X_test, y_test = X, y  # Use full dataset for testing
+            X_test, y_test = X, y
 
         # Create and train model
         if solver == "standard":
@@ -119,10 +124,12 @@ def train_and_evaluate_model(
     # Create results dataframe
     coef_df = pd.DataFrame({
         "vibe": feature_names,
-        "coef": mean_coefs,
+        "coef": np.mean(bootstrap_coefs, axis=0),
+        # "coef": np.mean(normalized_coefs, axis=0),  # Add mean of normalized coefs
         "selection_frequency": coef_nonzero if solver != "standard" else 1.0,
         "p_value": p_values,
-        "coef_std": np.std(bootstrap_coefs, axis=0),
+        # "coef_std": np.std(bootstrap_coefs, axis=0),
+        "coef_std": np.std(bootstrap_coefs, axis=0),  # Add normalized std dev
         "coef_lower_ci": coef_ci[0],
         "coef_upper_ci": coef_ci[1]
     })
@@ -272,6 +279,7 @@ def create_side_by_side_plot(
         },
         template="plotly_white",
         showlegend=True,
+        margin=dict(l=20, r=20, t=100, b=20),
     )
 
     for i, subtitle in enumerate(
@@ -441,6 +449,7 @@ def create_vibe_correlation_plot(vibe_df: pd.DataFrame, models: List[str]):
         xaxis_tickangle=-45,
         width=800,
         height=800,
+        margin=dict(l=20, r=20, t=50, b=20),
     )
 
     return fig

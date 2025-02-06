@@ -11,8 +11,6 @@ from lotus.cache import CacheConfig, CacheType, CacheFactory
 from typing import List
 
 from utils import (
-    proposer_postprocess,
-    parse_axes,
     get_pref_score,
     train_and_evaluate_model,
     get_feature_df,
@@ -188,6 +186,38 @@ Your final list of simplified properties should be human interpretable. The fina
 
 Each property should be <= 10 words. Order your final list of properties by how much they are seen in the data. Your response should be a list deliniated with "-"
 """
+
+def parse_bullets(text: str):
+    lines = text.split("\n")
+    bullets = []
+    for line in lines:
+        if line.strip().startswith("-") or line.strip().startswith("*"):
+            bullets.append(line.strip().lstrip("- *").strip())
+        else:
+            bullets.append(line.strip())
+    return bullets
+
+def proposer_postprocess(text: str):
+    """
+    Process the output from the proposer.
+    """
+    bullets = parse_bullets(text)
+    bullets = [b.replace("**", "").replace("-", "") for b in bullets]
+    return bullets
+
+
+def parse_axes(text: str):
+    """
+    Parse axes from text.
+    """
+    lines = [line.strip() for line in text.split("\n") if line.strip()]
+    axes = []
+    for line in lines:
+        cleaned = line.strip('1234567890. -"')
+        cleaned = cleaned.replace("**", "")
+        if cleaned:
+            axes.append(cleaned)
+    return axes
 
 
 def propose_vibes(
