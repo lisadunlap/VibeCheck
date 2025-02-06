@@ -89,7 +89,7 @@ def run_multi_vibecheck(
     base_config = OmegaConf.load("configs/base.yaml")
     base_config.models = models
     base_config.proposer.num_samples = num_proposal_samples
-    base_config.num_final_vibes = num_final_vibes
+    base_config.num_vibes = num_final_vibes
     base_config.data_path = csv_file
     base_config.test = test_mode
     base_config.project_name = project_name

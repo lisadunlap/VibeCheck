@@ -9,6 +9,12 @@ import torch
 import torch.nn as nn
 from torch.utils.data import Dataset, DataLoader
 from sklearn.model_selection import train_test_split
+from tqdm import tqdm
+
+import lotus
+from lotus.models import LM, SentenceTransformersRM
+from lotus.cache import CacheConfig, CacheType, CacheFactory
+from components.utils_llm import get_llm_embedding, get_llm_output
 
 def ranker_postprocess(output: str, models: List[str]) -> str:
     try:
@@ -28,6 +34,49 @@ def ranker_postprocess(output: str, models: List[str]) -> str:
         print(f"Error in ranker_postprocess: {output}\n\n{e}")
         return "tie"
 
+def ranker_postprocess_multi(output: str, models: List[str]) -> List[str]:
+    """
+    Process multi-vibe ranking output into a list of model preferences.
+    
+    Args:
+        output: Raw LLM output string containing property-based rankings
+        models: List of model names [model_a, model_b]
+    
+    Returns:
+        List of strings where each element is either model_a, model_b, or "tie"
+    """
+    try:
+        # Clean up output
+        output = output.replace("Output ", "").replace("output ", "")
+        output = re.sub(r"[#*]", "", output)
+        
+        # Find the Ranking: section and extract property-based responses
+        ranking_pattern = re.compile(r"(?:Ranking:|^)\s*(?:Property\s+\d+:\s*(A|B|N/A|unsure|equal)(?:\s*\n|$))+", re.I | re.M)
+        ranking_section = ranking_pattern.search(output)
+        
+        if not ranking_section:
+            return []
+            
+        # Extract individual rankings
+        score_pattern = re.compile(r"Property\s+\d+:\s*(A|B|N/A|unsure|equal)", re.I)
+        scores = score_pattern.findall(ranking_section.group())
+        
+        # Convert each score to the appropriate model name or "tie"
+        results = []
+        for score in scores:
+            score = score.lower()
+            if score == "a":
+                results.append(models[0])
+            elif score == "b":
+                results.append(models[1])
+            else:
+                results.append("tie")
+                
+        return results
+        
+    except Exception as e:
+        print(f"Error in ranker_postprocess_multi: {output}\n\n{e}")
+        return []
 
 def convert_scores(scores: List[str], original_models: List[str]) -> List[int]:
     return [1 if score == original_models[0] else -1 if score == original_models[1] else 0 for score in scores]
@@ -39,6 +88,11 @@ class VibeRankerBase:
     from omegaconf import OmegaConf
     def __init__(self, config: OmegaConf):
         self.config = config
+        # Initialize LOTUS
+        cache_config = CacheConfig(cache_type=CacheType.SQLITE, max_size=1000)
+        cache = CacheFactory.create_cache(cache_config)
+        lm = LM(model=config["ranker"].model, cache=cache)
+        lotus.settings.configure(lm=lm, enable_cache=True)
 
     def score(self, vibes: List[str], df: pd.DataFrame, models: List[str]) -> pd.DataFrame:
         """
@@ -166,18 +220,154 @@ Remember to be as objective as possible and strictly adhere to the response form
 
         return vibe_df, num_collisions
 
-# def build_vibe_df(vibes: List[str], df: pd.DataFrame) -> pd.DataFrame:
-#     """Helper: Build vibe_df by concatenating df copies for each vibe."""
-#     vibe_dfs = []
-#     for vibe in vibes:
-#         vibe_df = df.copy()
-#         vibe_df["vibe"] = vibe
-#         vibe_dfs.append(vibe_df)
+from components.prompts.ranker_prompts import judge_prompt_multi
+class VibeRankerBatch(VibeRankerBase):
+    """
+    Uses a batch of vibes to score the models.
+    """
+    def __init__(self, config: OmegaConf):
+        super().__init__(config)
+        self.batch_size = config["ranker"].get("batch_size", 10)
+        self.models = list(config["models"])
+        self.vibe_batch_size = config["ranker"].get("vibe_batch_size", 5)  # New parameter
 
-#     combined = pd.concat(vibe_dfs).reset_index(drop=True)
-#     # Drop duplicate columns
-#     combined = combined.loc[:, ~combined.columns.duplicated()]
-#     return combined
+    def score(self, vibes: List[str], df: pd.DataFrame, single_position_rank: bool = None) -> pd.DataFrame:
+        """
+        Scores the given vibes and returns a DataFrame with the scores per vibe.
+        """
+        all_scored_dfs = []
+        for i in range(0, len(vibes), self.vibe_batch_size):
+            vibe_batch = vibes[i:i + self.vibe_batch_size]
+            scored_df = self.score_vibe_batch(vibe_batch, df)
+            scored_df_reversed = self.score_vibe_batch(vibe_batch, df, reverse_position=True)
+            # rename score in scored_to to score_forward and score_reversed to score_backward
+            scored_df.rename(columns={"score": "score_forward", "score_reversed": "score_backward"}, inplace=True)
+            scored_df_reversed.rename(columns={"score": "score_backward", "score_reversed": "score_forward"}, inplace=True)
+            # merge the two dataframes on conversation_id, preference, and vibe
+            scored_df = scored_df.merge(scored_df_reversed[["conversation_id","vibe","score_backward"]], on=["conversation_id","vibe"], how="inner")
+            def is_position_bias(item1, item2):
+                return item1 == item2 and item1 != 0 and item2 != 0
+            scored_df["position_matters"] = scored_df.apply(lambda row: is_position_bias(row["score_forward"], row["score_backward"]), axis=1)
+            scored_df["score"] = scored_df.apply(lambda row: row["score_forward"] if not row["position_matters"] else 0, axis=1)
+            all_scored_dfs.append(scored_df)
+
+        return pd.concat(all_scored_dfs)
+
+    def score_vibe_batch(self, vibe_batch: List[str], df: pd.DataFrame, reverse_position: bool = False) -> pd.DataFrame:
+        """
+        Scores a batch of vibes and returns a DataFrame with the scores.
+        """
+        vibe_df = df.copy()
+        models = self.models
+        vibe_df["score_pos_model"] = [models for _ in range(len(vibe_df))]
+
+        def create_ranker_prompt(inputs_key: str) -> str:
+            return (
+                judge_prompt_multi
+                + f"""
+Here are the properties and the two responses:
+{{{inputs_key}}}
+Remember to be as objective as possible and strictly adhere to the response format.
+"""
+            )
+        if reverse_position:
+            vibe_df["ranker_inputs"] = vibe_df.apply(
+                lambda row: (
+                    f"Properties:\n" + "\n".join(f"Property {i+1}: {vibe}" for i, vibe in enumerate(vibe_batch)) + "\n"
+                    f"\n\nUser prompt:\n{row['question']}\n\n"
+                    f"Response A:\n{row[models[1]]}\n\n"
+                    f"Response B:\n{row[models[0]]}\n\n"
+                    f"\n\nProperties (restated):\n" + "\n".join(f"Property {i+1}: {vibe}" for i, vibe in enumerate(vibe_batch)) + "\n"
+                ),
+                axis=1
+            )
+        else:
+            vibe_df["ranker_inputs"] = vibe_df.apply(
+                lambda row: (
+                    f"Properties:\n" + "\n".join(f"Property {i+1}: {vibe}" for i, vibe in enumerate(vibe_batch)) + "\n"
+                    f"\n\nUser prompt:\n{row['question']}\n\n"
+                    f"Response A:\n{row[models[0]]}\n\n"
+                    f"Response B:\n{row[models[1]]}\n\n"
+                    f"\n\nProperties (restated):\n" + "\n".join(f"Property {i+1}: {vibe}" for i, vibe in enumerate(vibe_batch)) + "\n"
+                ),
+                axis=1
+            )
+        ranker_prompt1 = create_ranker_prompt("ranker_inputs")
+        ranker_df = vibe_df.sem_map(
+            ranker_prompt1, return_raw_outputs=True, suffix="ranker_output"
+        )
+        vibe_df = vibe_df.merge(
+            ranker_df[
+                [
+                    "conversation_id",
+                    "preference",
+                    "ranker_output",
+                    f"raw_outputranker_output",
+                ]
+            ],
+            on=["conversation_id", "preference"],
+            how="left",
+        )
+
+        vibe_df["ranker_output"] = [
+            ranker_postprocess_multi(output, models)
+            for output in vibe_df["ranker_output"]
+        ]
+
+        # Check for incorrect outputs and retry
+        max_retries = 3
+        for retry in range(max_retries):
+            retry_indices = []
+            for i in range(len(vibe_df)):
+                if len(vibe_df["ranker_output"][i]) != len(vibe_batch):
+                    retry_indices.append(i)
+
+            if not retry_indices:
+                break
+
+            print(f"Retry {retry + 1}: Attempting to fix {len(retry_indices)} incorrect outputs")
+
+            # Prepare prompts for retry
+            retry_prompts = [
+                ranker_prompt1.format(ranker_inputs=vibe_df.iloc[idx]["ranker_inputs"])
+                for idx in retry_indices
+            ]
+
+            try:
+                # Use get_llm_output with threading for batch processing
+                new_outputs = get_llm_output(retry_prompts, "gpt-4o", cache=retry == 0)
+                for idx, new_output in zip(retry_indices, new_outputs):
+                    vibe_df.at[idx, "ranker_output"] = ranker_postprocess_multi(new_output, models)
+            except Exception as e:
+                print(f"Error during retry: {e}")
+
+        # Count remaining errors after retries
+        final_errors = sum(len(output) != len(vibe_batch) for output in vibe_df["ranker_output"])
+        error_rate = final_errors / len(vibe_df)
+        print(f"Final error rate after retries: {error_rate}")
+        wandb.summary["prop_position_collisions"] = error_rate
+
+        vibe_df["score_label"] = vibe_df["ranker_output"]
+        vibe_df["vibe"] = [vibe_batch for _ in range(len(vibe_df))]
+        # explode the vibes column and the score column at the same time
+        vibe_df = vibe_df.explode(["vibe", "score_label"])
+        vibe_df["score"] = vibe_df["score_label"].apply(
+            lambda x: 1 if x == models[0] else (-1 if x == models[1] else 0)
+        )
+        return vibe_df
+
+def build_vibe_df(vibes: List[str], df: pd.DataFrame) -> pd.DataFrame:
+    """Helper: Build vibe_df by concatenating df copies for each vibe."""
+    vibe_dfs = []
+    for vibe in vibes:
+        vibe_df = df.copy()
+        vibe_df["vibe"] = vibe
+        vibe_dfs.append(vibe_df)
+
+    combined = pd.concat(vibe_dfs).reset_index(drop=True)
+    # Drop duplicate columns
+    combined = combined.loc[:, ~combined.columns.duplicated()]
+    return combined
 
 def setup_ranker_inputs(
     vibe_df: pd.DataFrame,
@@ -366,11 +556,11 @@ class VibeRankerEmbedding(VibeRanker):
         """
         
         df = df.copy()
-        df["model_a_embedding"] = df[models[0]].apply(lambda x: np.array(get_llm_embedding(x, self.embedding_model)))
-        df["model_b_embedding"] = df[models[1]].apply(lambda x: np.array(get_llm_embedding(x, self.embedding_model)))
-        df["vibe_embedding"] = df["vibe"].apply(lambda x: np.array(get_llm_embedding(x, self.embedding_model)))
-        df["model_a_embedding"] = df["model_a_embedding"].apply(lambda x: x / np.linalg.norm(x))
-        df["model_b_embedding"] = df["model_b_embedding"].apply(lambda x: x / np.linalg.norm(x))
+        # df["model_a_embedding"] = get_llm_embedding(df[models[0]].tolist(), self.embedding_model)
+        # df["model_b_embedding"] = get_llm_embedding(df[models[1]].tolist(), self.embedding_model)
+        df["vibe_embedding"] = get_llm_embedding(df["vibe"].tolist(), self.embedding_model)
+        # df["model_a_embedding"] = df["model_a_embedding"].apply(lambda x: x / np.linalg.norm(x))
+        # df["model_b_embedding"] = df["model_b_embedding"].apply(lambda x: x / np.linalg.norm(x))
         df["vibe_embedding"] = df["vibe_embedding"].apply(lambda x: x / np.linalg.norm(x))
 
         # Calculate similarities
@@ -398,11 +588,12 @@ class VibeRankerEmbedding(VibeRanker):
         )
 
         # Drop embedding columns
-        df = df.drop(columns=["model_a_embedding", "model_b_embedding", "vibe_embedding"])
+        display_df = df.copy()
+        display_df = display_df.drop(columns=["model_a_embedding", "model_b_embedding", "vibe_embedding"])
 
-        df["score_pos_model"] = [models for _ in range(len(df))] # hack: need this for training prediction models
-        train_embedding_model(df, models, vibe, self.embedding_model, self.config)
-        return df, 0  
+        display_df["score_pos_model"] = [models for _ in range(len(df))] # hack: need this for training prediction models
+        # train_embedding_model(df, models, vibe, self.embedding_model, self.config)
+        return display_df, 0  
     
     @staticmethod
     def plot_embedding_similarity(vibe: str, df: pd.DataFrame, models: List[str]) -> None:
@@ -460,7 +651,11 @@ class VibePredictor(nn.Module):
     def forward(self, x):
         return self.model(x)
 
-def train_embedding_model(df: pd.DataFrame, models: List[str], vibe: str, embedding_model: str, config: OmegaConf) -> None:
+def train_embedding_model(df: pd.DataFrame, 
+                          models: List[str], 
+                          vibe: str, 
+                          embedding_model: 
+                          str, config: OmegaConf) -> None:
     """
     Trains an embedding model on the given data using PyTorch. Ranks half the data using the LLM ranker,
     trains a neural network to predict the ranker score, then uses it to predict the other half.
@@ -469,13 +664,15 @@ def train_embedding_model(df: pd.DataFrame, models: List[str], vibe: str, embedd
     
     # Prepare data
     df = df.copy()
+    config["ranker"]["single_position_rank"] = False
     ranker = VibeRanker(config)
     df, _ = ranker.score_single_vibe(vibe, df, models, single_position_rank=True)
     
     # Get embeddings
-    df["model_a_embedding"] = df[models[0]].apply(lambda x: np.array(get_llm_embedding(x, embedding_model)))
-    df["model_b_embedding"] = df[models[1]].apply(lambda x: np.array(get_llm_embedding(x, embedding_model)))
-    df["vibe_embedding"] = df["vibe"].apply(lambda x: np.array(get_llm_embedding(x, embedding_model)))
+    # if "model_a_embedding" not in df.columns:
+    #     df["model_a_embedding"] = get_llm_embedding(df[models[0]].tolist(), embedding_model)
+    # if "model_b_embedding" not in df.columns:
+    #     df["model_b_embedding"] = get_llm_embedding(df[models[1]].tolist(), embedding_model)
     
     # Normalize embeddings
     df["model_a_embedding"] = df["model_a_embedding"].apply(lambda x: x / np.linalg.norm(x))
@@ -512,7 +709,7 @@ def train_embedding_model(df: pd.DataFrame, models: List[str], vibe: str, embedd
     
     # Training loop
     num_epochs = 100
-    for epoch in range(num_epochs):
+    for epoch in tqdm(range(num_epochs), desc="Training epochs"):
         model.train()
         for batch_embeddings, batch_labels in train_loader:
             batch_embeddings = batch_embeddings.to(device)
@@ -537,14 +734,26 @@ def train_embedding_model(df: pd.DataFrame, models: List[str], vibe: str, embedd
     # Convert predictions back to original scale (-1, 0, 1)
     df_test["score_pred"] = [pred - 1 for pred in predictions]
     # log distribution of predictions
-    wandb.log({f"vibe_predictor_pred_dist_{vibe}": wandb.Histogram(df_test["score_pred"])})
+    # Create plotly bar plot of prediction distribution
+    fig = go.Figure(data=[
+        go.Bar(
+            x=list(df_test["score_pred"].value_counts().index),
+            y=list(df_test["score_pred"].value_counts().values)
+        )
+    ])
+    fig.update_layout(
+        title=f"Vibe Predictor Distribution - {vibe}",
+        xaxis_title="Predicted Score",
+        yaxis_title="Count"
+    )
+    wandb.log({f"Vibe Training/vibe_predictor_pred_dist_{vibe}": fig})
     
     # Calculate and log accuracy
     accuracy = (df_test["score"] == df_test["score_pred"]).mean()
+    print(f"accuracy: {accuracy}")
     wandb.log({f"vibe_predictor_accuracy_{vibe}": accuracy})
     
     return df_test
-
 
 # from components.utils_llm import get_llm_embedding
 # from sklearn.metrics.pairwise import cosine_similarity
@@ -639,3 +848,4 @@ def train_embedding_model(df: pd.DataFrame, models: List[str], vibe: str, embedd
 #     # drop embeddings
 #     vibe_df = vibe_df.drop(columns=["model_a_embedding", "model_b_embedding", "vibe_embedding"])
 #     return vibe_df
+

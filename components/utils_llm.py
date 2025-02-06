@@ -3,6 +3,7 @@ import logging
 import os
 import threading
 from typing import List
+import concurrent.futures
 
 import lmdb
 import openai
@@ -31,8 +32,20 @@ llm_embed_cache = lmdb.open("cache/llm_embed_cache", map_size=int(1e11))
 
 
 def get_llm_output(
-    prompt: str, model: str, cache=True, system_prompt=None, history=[], max_tokens=256
-) -> str:
+    prompt: str | List[str], model: str, cache=True, system_prompt=None, history=[], max_tokens=256
+) -> str | List[str]:
+    # Handle list of prompts with thread pool
+    if isinstance(prompt, list):
+        with concurrent.futures.ThreadPoolExecutor(max_workers=16) as executor:
+            futures = [
+                executor.submit(
+                    get_llm_output, p, model, cache, system_prompt, history, max_tokens
+                )
+                for p in prompt
+            ]
+            return [f.result() for f in concurrent.futures.as_completed(futures)]
+
+    # Original single prompt logic
     openai.api_base = (
         "https://api.openai.com/v1" if model != "llama-3-8b" else "http://localhost:8001/v1"
     )
@@ -157,7 +170,17 @@ def get_llm_output(
     return "LLM Error: Cannot get response."
 
 
-def get_llm_embedding(prompt: str, model: str) -> str:
+def get_llm_embedding(prompt: str | List[str], model: str) -> str | List[str]:
+    # Handle list of prompts with thread pool
+    if isinstance(prompt, list):
+        with concurrent.futures.ThreadPoolExecutor(max_workers=32) as executor:
+            futures = [
+                executor.submit(get_llm_embedding, p, model)
+                for p in prompt
+            ]
+            return [f.result() for f in concurrent.futures.as_completed(futures)]
+
+    # Original single prompt logic
     openai.api_base = "https://api.openai.com/v1"
     client = OpenAI()
     key = json.dumps([model, prompt])
@@ -183,7 +206,7 @@ def get_llm_embedding(prompt: str, model: str) -> str:
             logging.error(f"LLM Error: {e}")
             continue
 
-    return "LLM Error: Cannot get response."
+    return None
 
 
 def test_get_llm_output():
