@@ -355,7 +355,7 @@ def create_vibecheck_ui():
                     md += f"**Prompt:** {row['question']}\n\n"
                     md += f"**Output:**\n{row[model_name]}\n\n"
                     md += f"**Score:** {row['score']}\n\n"
-                    md += f"**Judge / ranker raw output:**\n{row['raw_outputranker_output_1']}\n\n"
+                    md += f"**Judge / ranker raw output:**\n{row['ranker_output_1']}\n\n"
                     md += "---\n\n"
 
                 return md
@@ -460,13 +460,12 @@ def create_vibecheck_ui():
 
                     run_multi_btn = gr.Button("✨VibeCheck✨")
 
-                # Right Column - Plots
-                with gr.Column(scale=2):
-                    multi_output_plot1 = gr.Plot()
-                    multi_output_plot2 = gr.Plot()
+                with gr.Column():
+                    multi_output_md = gr.Markdown()
 
-            with gr.Row():
-                multi_output_md = gr.Markdown()
+            # Right Column - Plots
+            multi_output_plot1 = gr.Plot()
+            multi_output_plot2 = gr.Plot()
 
             # Bottom Row - Vibe Examples
             with gr.Row():
@@ -638,7 +637,7 @@ def create_vibecheck_ui():
                         md += f"({models[0]} exhibits this vibe more)\n\n"
                     else:
                         md += f"({models[1]} exhibits this vibe more)\n\n"
-                    md += f"**Judge / ranker raw output:**\n{row['raw_outputranker_output_1']}\n\n"
+                    md += f"**Judge / ranker raw output:**\n{row['ranker_output_1']}\n\n"
                     md += "---\n\n"
 
                 return md

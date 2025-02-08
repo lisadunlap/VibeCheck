@@ -4,6 +4,7 @@ import os
 import threading
 from typing import List
 import concurrent.futures
+from tqdm import tqdm
 
 import lmdb
 import openai
@@ -36,14 +37,14 @@ def get_llm_output(
 ) -> str | List[str]:
     # Handle list of prompts with thread pool
     if isinstance(prompt, list):
-        with concurrent.futures.ThreadPoolExecutor(max_workers=16) as executor:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=32) as executor:
             futures = [
                 executor.submit(
                     get_llm_output, p, model, cache, system_prompt, history, max_tokens
                 )
                 for p in prompt
             ]
-            return [f.result() for f in concurrent.futures.as_completed(futures)]
+            return [f.result() for f in tqdm(concurrent.futures.as_completed(futures), total=len(futures))]
 
     # Original single prompt logic
     openai.api_base = (
@@ -178,7 +179,7 @@ def get_llm_embedding(prompt: str | List[str], model: str) -> str | List[str]:
                 executor.submit(get_llm_embedding, p, model)
                 for p in prompt
             ]
-            return [f.result() for f in concurrent.futures.as_completed(futures)]
+            return [f.result() for f in tqdm(concurrent.futures.as_completed(futures), total=len(futures))]
 
     # Original single prompt logic
     openai.api_base = "https://api.openai.com/v1"

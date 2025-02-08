@@ -293,21 +293,11 @@ Remember to be as objective as possible and strictly adhere to the response form
                 axis=1
             )
         ranker_prompt1 = create_ranker_prompt("ranker_inputs")
-        ranker_df = vibe_df.sem_map(
-            ranker_prompt1, return_raw_outputs=True, suffix="ranker_output"
-        )
-        vibe_df = vibe_df.merge(
-            ranker_df[
-                [
-                    "conversation_id",
-                    "preference",
-                    "ranker_output",
-                    f"raw_outputranker_output",
-                ]
-            ],
-            on=["conversation_id", "preference"],
-            how="left",
-        )
+        vibe_df["ranker_output"] = get_llm_output([
+                ranker_prompt1.format(ranker_inputs=vibe_df.iloc[idx]["ranker_inputs"])
+                for idx in range(len(vibe_df))
+            ], self.config["ranker"].model, cache=True)
+
 
         vibe_df["ranker_output"] = [
             ranker_postprocess_multi(output, models)
@@ -452,91 +442,6 @@ def merge_ranker_output(
         for output, model in zip(vibe_df[suffix], vibe_df["score_pos_model"])
     ]
     return vibe_df
-
-# from components.prompts.ranker_prompts import judge_prompt
-# def rank_vibes(
-#     vibes: List[str],
-#     df: pd.DataFrame,
-#     models: List[str],
-#     single_position_rank: bool = False,
-# ) -> pd.DataFrame:
-#     """
-#     Ranks the two model outputs across the given vibes (axes) using LOTUS ranking prompts.
-#     """
-#     ranker_prompt1 = (
-#         judge_prompt
-#         + """
-# Here is the property and the two responses:
-# {ranker_inputs}
-# Remember to be as objective as possible and strictly adhere to the response format.
-# """
-#     )
-#     ranker_prompt2 = (
-#         judge_prompt
-#         + """
-# Here is the property and the two responses:
-# {ranker_inputs_reversed}
-# Remember to be as objective as possible and strictly adhere to the response format.
-# """
-#     )
-
-#     # 1) Build vibe DataFrame
-#     vibe_df = build_vibe_df(vibes, df)
-
-#     # 2) Create ranker inputs (handles single or multi-position rank creation)
-#     vibe_df = setup_ranker_inputs(vibe_df, models, single_position_rank)
-
-#     # 3) Perform ranker_1
-#     ranker_1 = vibe_df.sem_map(
-#         ranker_prompt1, return_raw_outputs=True, suffix="ranker_output_1"
-#     )
-#     vibe_df = merge_ranker_output(vibe_df, ranker_1, models, "ranker_output_1")
-
-#     # 4) If single_position_rank == False, don't shuffle the models, just run twice
-#     # TODO: change to not combine scores here, just put all into the regression
-#     if not single_position_rank:
-#         ranker_2 = vibe_df.sem_map(
-#             ranker_prompt2, return_raw_outputs=True, suffix="ranker_output_2"
-#         )
-#         vibe_df = vibe_df.merge(
-#             ranker_2[
-#                 ["question", models[0], models[1], "preference", "ranker_output_2"]
-#             ],
-#             on=["question", models[0], models[1], "preference"],
-#             how="left",
-#         )
-#         vibe_df["ranker_output_2"] = [
-#             ranker_postprocess(output, model)
-#             for output, model in zip(
-#                 vibe_df["ranker_output_2"], vibe_df["score_pos_model"]
-#             )
-#         ]
-
-#         # 5) Compute final score (excluding collisions)
-#         vibe_df["score"] = vibe_df["ranker_output_1"].apply(
-#             lambda x: 1 if x == models[0] else (-1 if x == models[1] else 0)
-#         )
-#         vibe_df["score_reversed"] = vibe_df["ranker_output_2"].apply(
-#             lambda x: 1 if x == models[0] else (-1 if x == models[1] else 0)
-#         )
-#         vibe_df["position_matters"] = (
-#             (vibe_df["score"] != -1 * vibe_df["score_reversed"])
-#             | (vibe_df["score"] == 0)
-#             | (vibe_df["score_reversed"] == 0)
-#         )
-#         vibe_df["score"] = vibe_df.apply(
-#             lambda row: row["score"] if not row["position_matters"] else 0, axis=1
-#         )
-#         wandb.summary["prop_position_collisions"] = vibe_df["position_matters"].mean()
-
-#     else:
-#         # single-position rank scoring
-#         vibe_df["score_label"] = vibe_df["ranker_output_1"]
-#         vibe_df["score"] = vibe_df["score_label"].apply(
-#             lambda x: 1 if x == models[0] else (-1 if x == models[1] else 0)
-#         )
-
-#     return vibe_df
 
 
 from components.utils_llm import get_llm_embedding
@@ -754,98 +659,3 @@ def train_embedding_model(df: pd.DataFrame,
     wandb.log({f"vibe_predictor_accuracy_{vibe}": accuracy})
     
     return df_test
-
-# from components.utils_llm import get_llm_embedding
-# from sklearn.metrics.pairwise import cosine_similarity
-# import numpy as np
-
-# def rank_vibes_embedding(vibes: List[str], 
-#                          df: pd.DataFrame, 
-#                          models: List[str],
-#                          embedding_model: str = "text-embedding-3-small") -> pd.DataFrame:
-#     """
-#     Ranks the two model outputs across the given vibes (axes) using embedding similarity.
-#     This is much cheaper than the LLM ranker, but way less accurate. Maybe we can train an MLP with some LLM labels.
-#     Also maybe im not normalizing the embeddings correctly.
-#     """
-#     import plotly.graph_objects as go
-
-#     vibe_dfs = []
-#     for vibe in vibes:
-#         vibe_df = df.copy()
-#         vibe_df["vibe"] = vibe
-#         vibe_dfs.append(vibe_df)
-
-#     # drop any duplicate columns
-#     vibe_df = vibe_df.loc[:, ~vibe_df.columns.duplicated()]
-#     vibe_df["model_a_embedding"] = vibe_df[models[0]].apply(lambda x: np.array(get_llm_embedding(x, embedding_model)))
-#     vibe_df["model_b_embedding"] = vibe_df[models[1]].apply(lambda x: np.array(get_llm_embedding(x, embedding_model)))
-#     vibe_df["vibe_embedding"] = vibe_df["vibe"].apply(lambda x: np.array(get_llm_embedding(x, embedding_model)))
-
-#     vibe_df["model_a_embedding"] = vibe_df["model_a_embedding"].apply(lambda x: x / np.linalg.norm(x))
-#     vibe_df["model_b_embedding"] = vibe_df["model_b_embedding"].apply(lambda x: x / np.linalg.norm(x))
-#     vibe_df["vibe_embedding"] = vibe_df["vibe_embedding"].apply(lambda x: x / np.linalg.norm(x))
-
-#     # vibe_embeddings = vibe_df.drop_duplicates(subset=["vibe"])["vibe_embedding"].values
-#     # model_a_embeddings = vibe_df.drop_duplicates(subset=["question"])["model_a_embedding"].values
-#     # model_b_embeddings = vibe_df.drop_duplicates(subset=["question"])["model_b_embedding"].values
-
-#     # # normalize across all embeddings
-#     # vibe_df["model_a_embedding"] = vibe_df["model_a_embedding"].apply(lambda x: x - np.mean(all_embeddings, axis=0))
-#     # vibe_df["model_b_embedding"] = vibe_df["model_b_embedding"].apply(lambda x: x - np.mean(all_embeddings, axis=0))
-#     # vibe_df["vibe_embedding"] = vibe_df["vibe_embedding"].apply(lambda x: x - np.mean(vibe_embeddings, axis=0))
-  
-#     vibe_df["model_a_vibe_sim"] = vibe_df.apply(
-#         lambda row: cosine_similarity(
-#             row["model_a_embedding"].reshape(1, -1), 
-#             row["vibe_embedding"].reshape(1, -1)
-#         )[0][0],  # Extract scalar value from 2D result
-#         axis=1,
-#     )
-#     vibe_df["model_b_vibe_sim"] = vibe_df.apply(
-#         lambda row: cosine_similarity(
-#             row["model_b_embedding"].reshape(1, -1), 
-#             row["vibe_embedding"].reshape(1, -1)
-#         )[0][0],  # Extract scalar value from 2D result
-#         axis=1,
-#     )
-
-#     # Create and log histogram plots for each vibe
-#     for vibe in vibes:
-#         vibe_subset = vibe_df[vibe_df["vibe"] == vibe]
-        
-#         fig = go.Figure()
-#         fig.add_trace(go.Histogram(
-#             x=vibe_subset["model_a_vibe_sim"],
-#             name=models[0],
-#             opacity=0.75,
-#             nbinsx=30
-#         ))
-#         fig.add_trace(go.Histogram(
-#             x=vibe_subset["model_b_vibe_sim"], 
-#             name=models[1],
-#             opacity=0.75,
-#             nbinsx=30
-#         ))
-        
-#         fig.update_layout(
-#             title=f"Embedding Similarity Distribution for<br><span style='font-size:80%'>'{vibe}'</span>",
-#             xaxis_title="Cosine Similarity",
-#             yaxis_title="Count",
-#             barmode='overlay',
-#             template="plotly_white"
-#         )
-        
-#         truncated_vibe = ' '.join(vibe.split()[:3])
-#         wandb.log({f"Vibe Scoring/embedding_sim_dist_{truncated_vibe}": wandb.Html(fig.to_html())})
-
-#     # if cos sim between model_a_embeddings and vibe_embeddings is greater than model_b_embeddings and vibe_embeddings, then 1, else -1
-#     vibe_df["score"] = vibe_df.apply(
-#         lambda row: 1 if row["model_a_vibe_sim"] > row["model_b_vibe_sim"] else -1,
-#         axis=1,
-#     )
-    
-#     # drop embeddings
-#     vibe_df = vibe_df.drop(columns=["model_a_embedding", "model_b_embedding", "vibe_embedding"])
-#     return vibe_df
-
