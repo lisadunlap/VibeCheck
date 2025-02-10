@@ -1,0 +1,51 @@
+project: VibeCheck_Trigger
+entitiy : clipinvariance
+wandb: True # Set to True to log to Weights and Biases
+
+num_samples: False
+output_name: preset_gpt
+filter_mm_only: False
+filter: False
+num_final_eval: 10
+
+save_dir: pipeline_results
+
+
+#note: error = absolute paths --> different env or remote server issue
+
+data_path: data/gpt_vs_human/multisource_testing_train.csv
+#data_path: data/gpt_vs_human/vibecheck+llama.csv
+
+test_data_path: data/gpt_vs_human/multisource_testing_test.csv
+
+
+models : [human_answers,chatgpt_answers]
+
+judges: [gpt-4o-mini]
+eval_only: True
+
+axes: [
+    "Cognitive Tension - High: Complex, abstract language requiring significant cognitive effort to interpret. Low: Simple, easy-to-process language with minimal cognitive demand.",
+    "Surprise - High: Unexpected word choices, twists in phrasing, or novel expressions that violate typical expectations. Low: Predictable, conventional language patterns.",
+    "Affective Arousal - High: Intense, stimulating language that evokes strong emotional activation. Low: Calm, relaxed language with minimal emotional stimulation.",
+    "Trustworthiness - High: Direct, clear, and transparent language increasing perceived honesty. Low: Language feels evasive, vague, or exaggerated, reducing perceived credibility.",
+    "Ambiguity Tolerance - High: Intentionally ambiguous or poetic language allowing multiple interpretations. Low: Clear, definitive statements with minimal room for alternative interpretations.",
+    "Temporal Urgency - High: Rapid pacing, short sentence bursts, and urgent framing of ideas. Low: Relaxed pacing with longer pauses and slower information delivery.",
+    "Cognitive Ease - High: Clear, simple language with a natural flow, easy to process in real time. Low: Dense, technical language requiring re-reading or specialized knowledge.",
+    "Emotional Volatility - High: Frequent shifts in emotional tone or intensity within a single output. Low: Consistent emotional tone throughout the output.",
+    "Rhythmic Cadence - High: Smooth, rhythmic sentence patterns with a musical quality. Low: Choppy, fragmented sentence structures lacking flow.",
+    "Intimacy - High: Warm, personal language that builds emotional connection. Low: Distant, formal language that maintains emotional detachment."
+]
+
+proposer_prompt: proposer_prompt_freeform
+
+# models
+rubric_generation_model: "gpt-4o"
+proposer_model: "gpt-4o"
+
+#tf-idf
+use_tfidf: True
+num_tfidf_features: 1000
+idf_min_df: 2
+idf_max_df: 0.95
+idf_norm: l2
