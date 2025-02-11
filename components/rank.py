@@ -223,7 +223,7 @@ Remember to be as objective as possible and strictly adhere to the response form
 from components.prompts.ranker_prompts import judge_prompt_multi
 class VibeRankerBatch(VibeRankerBase):
     """
-    Uses a batch of vibes to score the models.
+    Uses a batch of vibes to score the models. TOOD: merge with VibeRanker
     """
     def __init__(self, config: OmegaConf):
         super().__init__(config)
@@ -564,6 +564,7 @@ def train_embedding_model(df: pd.DataFrame,
     """
     Trains an embedding model on the given data using PyTorch. Ranks half the data using the LLM ranker,
     trains a neural network to predict the ranker score, then uses it to predict the other half.
+    This is still in the works.
     """
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     
