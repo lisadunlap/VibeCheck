@@ -5,6 +5,7 @@ import litellm
 import numpy as np
 
 from components.prompts.proposer_prompts import proposer_prompt_freeform, proposer_prompt_freeform_iteration
+from components.utils_llm import get_llm_output, get_llm_embedding
 
 
 def parse_bullets(text: str):
@@ -122,14 +123,16 @@ class VibeProposer(VibeProposerBase):
         batch_df = pd.concat(batch_df)
 
         if current_vibes:
-            batch_df = batch_df.sem_map(
-                proposer_prompt_freeform_iteration,
-                return_raw_outputs=True,
-                suffix="differences",
+            batch_df["differences"] = get_llm_output(
+                [proposer_prompt_freeform_iteration.format(combined_responses=row["combined_responses"])
+                 for _, row in batch_df.iterrows()],
+                self.config["proposer"].model
             )
         else:
-            batch_df = batch_df.sem_map(
-                proposer_prompt_freeform, return_raw_outputs=True, suffix="differences"
+            batch_df["differences"] = get_llm_output(
+                [proposer_prompt_freeform.format(combined_responses=row["combined_responses"])
+                 for _, row in batch_df.iterrows()],
+                self.config["proposer"].model
             )
 
         batch_df["differences"] = batch_df["differences"].apply(
@@ -184,107 +187,16 @@ class VibeProposer(VibeProposerBase):
         Reduce the list of vibes to a smaller list of vibes.
         """
         # Cluster and reduce axes
-        # TODO: fix groupby_clusterid for sem_agg
         results = results.sem_index("differences", "differences_index").sem_cluster_by(
             "differences", 1
         )
         print(f"Number of total differences before reduction: {len(results)}")
-        summaries = results.sem_agg(
-            create_reduce_prompt(0),
-            suffix="reduced axes",
+        # sample 100 differences which represent different clusters
+        # TODO: change this to k-means clustering (but probably doesn't matter)
+        results = results.sample(100, random_state=42)
+        summaries = get_llm_output(create_reduce_prompt(0).format(differences='\n'.join(results["differences"].tolist())),
+            self.config["proposer"].model
         )
-        summaries["reduced axes parsed"] = summaries["reduced axes"].apply(parse_axes)
-        vibes = summaries.explode("reduced axes parsed")["reduced axes parsed"].to_list()
+        vibes = parse_axes(summaries)
         print(f"Number of total differences after reduction: {len(vibes)}")
         return vibes[:num_vibes]
-
-# def propose_vibes(
-#     df: pd.DataFrame,
-#     models: List[str],
-#     num_proposal_samples: int = 30,
-#     num_final_vibes: int = 10,
-#     batch_size: int = 5,
-#     current_vibes: List[str] = [],
-#     shuffle_positions: bool = False,
-# ):
-#     df["single_combined_response"] = df.apply(
-#         lambda row: (
-#             f"User prompt:\n{row['question']}\n\n"
-#             f"Model 1:\n{row[models[0]]}\n\n"
-#             f"Model 2:\n{row[models[1]]}"
-#         ),
-#         axis=1,
-#     )
-#     other_df = df.copy()
-#     other_df["single_combined_response"] = other_df.apply(
-#         lambda row: (
-#             f"User prompt:\n{row['question']}\n\n"
-#             f"Model 1:\n{row[models[1]]}\n\n"
-#             f"Model 2:\n{row[models[0]]}"
-#         ),
-#         axis=1,
-#     )
-#     proposer_df = pd.concat([df, other_df])
-#     proposer_df = proposer_df.sample(num_proposal_samples, random_state=42).reset_index(
-#         drop=True
-#     )
-#     proposer_df["batch_id"] = proposer_df.index // batch_size
-    
-#     # Add shuffling of positions across batches
-#     if shuffle_positions:
-#         # Randomly decide which batches should have swapped positions
-#         swap_batches = np.random.choice([True, False], size=proposer_df["batch_id"].max() + 1)
-#         proposer_df["should_swap"] = proposer_df["batch_id"].map(dict(enumerate(swap_batches)))
-#         # Apply the swap for selected batches
-#         proposer_df.loc[proposer_df["should_swap"], "single_combined_response"] = proposer_df[proposer_df["should_swap"]].apply(
-#             lambda row: (
-#                 f"User prompt:\n{row['question']}\n\n"
-#                 f"Model 1:\n{row[models[1]]}\n\n"
-#                 f"Model 2:\n{row[models[0]]}"
-#             ),
-#             axis=1,
-#         )
-#         proposer_df = proposer_df.drop("should_swap", axis=1)
-
-#     proposer_df["combined_responses"] = proposer_df.groupby("batch_id")[
-#         "single_combined_response"
-#     ].transform(lambda x: "\n-------------\n".join(x))
-    
-#     proposer_df = proposer_df.drop_duplicates("batch_id")
-#     if current_vibes:
-#         # add current vibes to the combined responses
-#         current_vibes_str = "Differences I have already found:\n" + "\n".join(
-#             current_vibes
-#         )
-#         proposer_df["combined_responses"] = proposer_df["combined_responses"].apply(
-#             lambda x: x + "\n\n" + current_vibes_str
-#         )
-#         proposer_df = proposer_df.sem_map(
-#             proposer_prompt_freeform_iteration,
-#             return_raw_outputs=True,
-#             suffix="differences",
-#         )
-#     else:
-#         proposer_df = proposer_df.sem_map(
-#             proposer_prompt_freeform, return_raw_outputs=True, suffix="differences"
-#         )
- 
-#     proposer_df["differences"] = proposer_df["differences"].apply(lambda x: [b.replace("**", "").replace("-", "") for b in parse_bullets(x)])
-#     results = proposer_df[proposer_df["differences"].apply(lambda x: len(x) > 0)]
-#     results = results.explode("differences").reset_index(drop=True)
-
-#     # Cluster and reduce axes
-#     # TODO: fix groupby_clusterid for sem_agg
-#     results = results.sem_index("differences", "differences_index").sem_cluster_by(
-#         "differences", 1
-#     )
-#     summaries = results.sem_agg(
-#         create_reduce_prompt(num_final_vibes),
-#         suffix="reduced axes",
-#     )
-#     summaries["reduced axes parsed"] = summaries["reduced axes"].apply(parse_axes)
-#     vibes = summaries.explode("reduced axes parsed")["reduced axes parsed"].to_list()
-#     print("Vibes:\n" + "\n".join(vibes))
-
-#     wandb.log({"Vibe Proposer/proposer_results": wandb.Table(dataframe=proposer_df)})
-#     return vibes
