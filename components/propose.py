@@ -193,7 +193,7 @@ class VibeProposer(VibeProposerBase):
         print(f"Number of total differences before reduction: {len(results)}")
         # sample 100 differences which represent different clusters
         # TODO: change this to k-means clustering (but probably doesn't matter)
-        results = results.sample(100, random_state=42)
+        results = results.sample(min(100, len(results)), random_state=42)
         summaries = get_llm_output(create_reduce_prompt(0).format(differences='\n'.join(results["differences"].tolist())),
             self.config["proposer"].model
         )

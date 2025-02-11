@@ -8,7 +8,8 @@
 </p>
 
 
-**This is a simplified and more user-friendly version of the VibeCheck paper.** Original code is in `paper_code` and should run, it's just very messy. Still working on adding all the functionality of the orignal code but the core functionality is here and the visualizations are much better. Namely we moved to using [LOTUS](https://lotus-ai.readthedocs.io/en/latest/), a pandas wrapper to easily run LLM/embedding calls on your data. It reduced my many thousand lines of code to like 2 files. I'm telling you it's the bees knees.
+**This is a simplified and more user-friendly version of the VibeCheck paper.** Original code is in `paper_code` and should run, it's just very messy. 
+<!-- Still working on adding all the functionality of the orignal code but the core functionality is here and the visualizations are much better. Namely we moved to using [LOTUS](https://lotus-ai.readthedocs.io/en/latest/), a pandas wrapper to easily run LLM/embedding calls on your data. It reduced my many thousand lines of code to like 2 files. I'm telling you it's the bees knees. -->
 
 ## Data
 
@@ -34,7 +35,7 @@ pip install -r requirements.txt
 
 3. Set env variables for your LLM API keys (e.g. OPENAI_API_KEY, ANTHROPIC_API_KEY, etc)
 
-To run local models, you can use the [LiteLLM library](https://docs.litellm.ai/docs/) with notes on how to set up with LOTUS [here](https://lotus-ai.readthedocs.io/en/latest/llm.html)
+<!-- To run local models, you can use the [LiteLLM library](https://docs.litellm.ai/docs/) with notes on how to set up with LOTUS [here](https://lotus-ai.readthedocs.io/en/latest/llm.html) -->
 
 4. Example run
 ```
