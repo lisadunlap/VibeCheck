@@ -15,6 +15,7 @@ import lotus
 from lotus.models import LM, SentenceTransformersRM
 from lotus.cache import CacheConfig, CacheType, CacheFactory
 from components.utils_llm import get_llm_embedding, get_llm_output
+import components.prompts.ranker_prompts as ranker_prompts
 
 def ranker_postprocess(output: str, models: List[str]) -> str:
     try:
@@ -110,7 +111,6 @@ class VibeRanker(VibeRankerBase):
     """
     Uses LLM to rate each response pair as either A, B, or equal.
     """
-    from components.prompts.ranker_prompts import judge_prompt
     def __init__(self, config: OmegaConf):
         super().__init__(config)
         self.single_position_rank = config["ranker"].get("single_position_rank", False)
@@ -162,22 +162,22 @@ Remember to be as objective as possible and strictly adhere to the response form
 """
             )
 
-        ranker_prompt1 = create_ranker_prompt("ranker_inputs")
-        ranker_prompt2 = create_ranker_prompt("ranker_inputs_reversed")
+        # ranker_prompt1 = create_ranker_prompt("ranker_inputs")
+        # ranker_prompt2 = create_ranker_prompt("ranker_inputs_reversed")
 
         # Create ranker inputs (handles single or multi-position rank creation)
         vibe_df = setup_ranker_inputs(df, models, single_position_rank)
 
         # Perform ranker_1
         ranker_1 = vibe_df.sem_map(
-            ranker_prompt1, return_raw_outputs=True, suffix="ranker_output_1"
+            getattr(ranker_prompts, self.config["ranker"].prompt), return_raw_outputs=True, suffix="ranker_output_1"
         )
         vibe_df = merge_ranker_output(vibe_df, ranker_1, models, "ranker_output_1")
 
         # If single_position_rank == False, don't shuffle the models, just run twice
         if not single_position_rank:
             ranker_2 = vibe_df.sem_map(
-                ranker_prompt2, return_raw_outputs=True, suffix="ranker_output_2"
+                getattr(ranker_prompts, self.config["ranker"].prompt), return_raw_outputs=True, suffix="ranker_output_2"
             )
             vibe_df = vibe_df.merge(
                 ranker_2[
@@ -220,7 +220,6 @@ Remember to be as objective as possible and strictly adhere to the response form
 
         return vibe_df, num_collisions
 
-from components.prompts.ranker_prompts import judge_prompt_multi
 class VibeRankerBatch(VibeRankerBase):
     """
     Uses a batch of vibes to score the models. TOOD: merge with VibeRanker
@@ -261,23 +260,14 @@ class VibeRankerBatch(VibeRankerBase):
         models = self.models
         vibe_df["score_pos_model"] = [models for _ in range(len(vibe_df))]
 
-        def create_ranker_prompt(inputs_key: str) -> str:
-            return (
-                judge_prompt_multi
-                + f"""
-Here are the properties and the two responses:
-{{{inputs_key}}}
-Remember to be as objective as possible and strictly adhere to the response format.
-"""
-            )
         if reverse_position:
             vibe_df["ranker_inputs"] = vibe_df.apply(
                 lambda row: (
                     f"Properties:\n" + "\n".join(f"Property {i+1}: {vibe}" for i, vibe in enumerate(vibe_batch)) + "\n"
-                    f"\n\nUser prompt:\n{row['question']}\n\n"
-                    f"Response A:\n{row[models[1]]}\n\n"
-                    f"Response B:\n{row[models[0]]}\n\n"
-                    f"\n\nProperties (restated):\n" + "\n".join(f"Property {i+1}: {vibe}" for i, vibe in enumerate(vibe_batch)) + "\n"
+                    f"--------------------------------\n\nUser prompt:\n{row['question']}\n\n"
+                    f"\n\nResponse A:\n{row[models[1]]}\n\n"
+                    f"\n\nResponse B:\n{row[models[0]]}\n\n"
+                    f"--------------------------------\n\nProperties (restated):\n" + "\n".join(f"Property {i+1}: {vibe}" for i, vibe in enumerate(vibe_batch)) + "\n"
                 ),
                 axis=1
             )
@@ -285,25 +275,27 @@ Remember to be as objective as possible and strictly adhere to the response form
             vibe_df["ranker_inputs"] = vibe_df.apply(
                 lambda row: (
                     f"Properties:\n" + "\n".join(f"Property {i+1}: {vibe}" for i, vibe in enumerate(vibe_batch)) + "\n"
-                    f"\n\nUser prompt:\n{row['question']}\n\n"
-                    f"Response A:\n{row[models[0]]}\n\n"
-                    f"Response B:\n{row[models[1]]}\n\n"
-                    f"\n\nProperties (restated):\n" + "\n".join(f"Property {i+1}: {vibe}" for i, vibe in enumerate(vibe_batch)) + "\n"
+                    f"--------------------------------\n\nUser prompt:\n{row['question']}\n\n"
+                    f"\n\nResponse A:\n{row[models[0]]}\n\n"
+                    f"n\nResponse B:\n{row[models[1]]}\n\n"
+                    f"--------------------------------\n\nProperties (restated):\n" + "\n".join(f"Property {i+1}: {vibe}" for i, vibe in enumerate(vibe_batch)) + "\n"
                 ),
                 axis=1
             )
-        ranker_prompt1 = create_ranker_prompt("ranker_inputs")
+
+        ranker_prompt = getattr(ranker_prompts, self.config["ranker"].prompt)
+        print(ranker_prompt.format(inputs=vibe_df.iloc[0]["ranker_inputs"]))
+        print("++++++++++++++++++++++++++++++++++++")
         vibe_df["ranker_output"] = get_llm_output([
-                ranker_prompt1.format(ranker_inputs=vibe_df.iloc[idx]["ranker_inputs"])
+                ranker_prompt.format(inputs=vibe_df.iloc[idx]["ranker_inputs"])
                 for idx in range(len(vibe_df))
             ], self.config["ranker"].model, cache=True)
-
-
+        print(vibe_df.iloc[0]["ranker_output"])
+        exit()
         vibe_df["ranker_output"] = [
             ranker_postprocess_multi(output, models)
             for output in vibe_df["ranker_output"]
         ]
-
         # Check for incorrect outputs and retry
         max_retries = 3
         for retry in range(max_retries):
@@ -319,7 +311,7 @@ Remember to be as objective as possible and strictly adhere to the response form
 
             # Prepare prompts for retry
             retry_prompts = [
-                ranker_prompt1.format(ranker_inputs=vibe_df.iloc[idx]["ranker_inputs"])
+                getattr(ranker_prompts, self.config["ranker"].prompt).format(inputs=vibe_df.iloc[idx]["ranker_inputs"])
                 for idx in retry_indices
             ]
 
@@ -461,11 +453,8 @@ class VibeRankerEmbedding(VibeRanker):
         """
         
         df = df.copy()
-        # df["model_a_embedding"] = get_llm_embedding(df[models[0]].tolist(), self.embedding_model)
-        # df["model_b_embedding"] = get_llm_embedding(df[models[1]].tolist(), self.embedding_model)
-        df["vibe_embedding"] = get_llm_embedding(df["vibe"].tolist(), self.embedding_model)
-        # df["model_a_embedding"] = df["model_a_embedding"].apply(lambda x: x / np.linalg.norm(x))
-        # df["model_b_embedding"] = df["model_b_embedding"].apply(lambda x: x / np.linalg.norm(x))
+        template = "Rate how much the response has the property '{vibe}'"
+        df["vibe_embedding"] = get_llm_embedding(df["vibe"].apply(lambda x: template.format(vibe=x)).tolist(), self.embedding_model)
         df["vibe_embedding"] = df["vibe_embedding"].apply(lambda x: x / np.linalg.norm(x))
 
         # Calculate similarities
@@ -487,8 +476,9 @@ class VibeRankerEmbedding(VibeRanker):
         self.plot_embedding_similarity(vibe, df, models)
 
         # Calculate scores
+        delta = 0.05
         df["score"] = df.apply(
-            lambda row: 1 if row["model_a_vibe_sim"] > row["model_b_vibe_sim"] else -1,
+            lambda row: 1 if row["model_a_vibe_sim"] > row["model_b_vibe_sim"] + delta else (-1 if row["model_a_vibe_sim"] < row["model_b_vibe_sim"] - delta else 0),
             axis=1,
         )
 

@@ -4,8 +4,9 @@ import wandb
 import litellm
 import numpy as np
 
-from components.prompts.proposer_prompts import proposer_prompt_freeform, proposer_prompt_freeform_iteration
 from components.utils_llm import get_llm_output, get_llm_embedding
+import components.prompts.reduction_prompts as reduction_prompts
+import components.prompts.proposer_prompts as proposer_prompts
 
 
 def parse_bullets(text: str):
@@ -14,28 +15,7 @@ def parse_bullets(text: str):
     for line in lines:
         if line.strip().startswith("-") or line.strip().startswith("*"):
             bullets.append(line.strip().lstrip("- *").strip())
-        else:
-            bullets.append(line.strip())
     return bullets
-
-
-def create_reduce_prompt(num_reduced_axes: int = 0):
-    if num_reduced_axes == 0:
-        return f"""Below is a list of properties that are found in LLM outputs. I would like to summarize this list to a set of representative properties with clear and concise descriptions that cover the recurring themes in the data. Are there any interesting overarching properties that are present in a large number of the properties? Please return a list of properties that are seen in the data, where each property represents one type of behavior that is seen in the data.
-
-Here is the list of properties:
-{{differences}}
-
-A human should be able to understand the property and its meaning, and this property should provide insight into the model's behavior or personality. Do not include subjective analysis about these properties, simply describe the property. For instance "the model is more advanced in its understanding" and "the model uses historical context" is not a good property because it is too vague and does not provide interesting insight into the model's behavior. Similarly, these properties should be on a per prompt basis, so "the model provides a consistent tone across prompts" or "the model varies its tone from formal to informal" is not a good property because a person could not make a judgement only looking at a single prompt. These properties should be something that a human could reasonably expect to see in the model's output when given new prompts. Order your final list of properties by how much they are seen in the data. Your response should be a list deliniated with "-"
-"""
-
-    return f"""Below is a list of properties that are found in LLM outputs. I would like to summarize this list to AT MOST {num_reduced_axes} representative properties with clear and concise descriptions. Are there any interesting overarching properties that are present in a large number of the properties?
-
-Here is the list of properties:
-{{differences}}
-
-A human should be able to understand the property and its meaning, and this property should provide insight into the model's behavior or personality. Do not include subjective analysis about these properties, simply describe the property. For instance "the model is more advanced in its understanding" or "the model uses historical context" is not a good property because it is too vague and does not provide interesting insight into the model's behavior. These properties should be something that a human could reasonably expect to see in the model's output when given new prompts. Order your final list of properties by how much they are seen in the data. Your response should be a list deliniated with "-"
-"""
 
 def parse_axes(text: str):
     """
@@ -122,21 +102,21 @@ class VibeProposer(VibeProposerBase):
             batch_df.append(self.prepare_batch(proposer_df[proposer_df["batch_id"] == batch_id].copy(), current_vibes, configs['shuffle_positions']))
         batch_df = pd.concat(batch_df)
 
-        if current_vibes:
+        if len(current_vibes) > 0:
             batch_df["differences"] = get_llm_output(
-                [proposer_prompt_freeform_iteration.format(combined_responses=row["combined_responses"])
+                [getattr(proposer_prompts, self.config["proposer"].iteration_prompt).format(combined_responses=row["combined_responses"])
                  for _, row in batch_df.iterrows()],
                 self.config["proposer"].model
             )
         else:
             batch_df["differences"] = get_llm_output(
-                [proposer_prompt_freeform.format(combined_responses=row["combined_responses"])
+                [getattr(proposer_prompts, self.config["proposer"].prompt).format(combined_responses=row["combined_responses"])
                  for _, row in batch_df.iterrows()],
                 self.config["proposer"].model
             )
 
         batch_df["differences"] = batch_df["differences"].apply(
-            lambda x: [b.replace("**", "").replace("-", "") for b in parse_bullets(x)]
+            lambda x: [b.replace("**", "") for b in parse_bullets(x)]
         )
         results = batch_df[batch_df["differences"].apply(lambda x: len(x) > 0)]
         results = results.explode("differences").reset_index(drop=True)
@@ -175,7 +155,7 @@ class VibeProposer(VibeProposerBase):
             batch_df["combined_responses"] = "\n-------------\n".join(
                 batch_df["single_combined_response"].tolist()
             )   
-        if current_vibes:
+        if len(current_vibes) > 0:
             current_vibes_str = "Differences I have already found:\n" + "\n".join(current_vibes)
             batch_df["combined_responses"] = batch_df["combined_responses"].apply(
                 lambda x: x + "\n\n" + current_vibes_str
@@ -194,9 +174,10 @@ class VibeProposer(VibeProposerBase):
         # sample 100 differences which represent different clusters
         # TODO: change this to k-means clustering (but probably doesn't matter)
         results = results.sample(min(100, len(results)), random_state=42)
-        summaries = get_llm_output(create_reduce_prompt(0).format(differences='\n'.join(results["differences"].tolist())),
+        summaries = get_llm_output(getattr(reduction_prompts, self.config["proposer"].reduction_prompt).format(differences='\n'.join(results["differences"].tolist())),
             self.config["proposer"].model
         )
+
         vibes = parse_axes(summaries)
         print(f"Number of total differences after reduction: {len(vibes)}")
         return vibes[:num_vibes]
