@@ -17,23 +17,23 @@ from lotus.cache import CacheConfig, CacheType, CacheFactory
 from components.utils_llm import get_llm_embedding, get_llm_output
 import components.prompts.ranker_prompts as ranker_prompts
 
-def ranker_postprocess(output: str, models: List[str]) -> str:
-    try:
-        output = output.replace("Output ", "").replace("output ", "")
-        output = re.sub(r"[#*]", "", output)
-        score_pattern = re.compile(r"Model: (A|B|N/A|unsure|equal)", re.I | re.M)
-        score = score_pattern.findall(output)
-        if not score:
-            return "tie"
-        if score[0].lower() == "a":
-            return models[0]
-        elif score[0].lower() == "b":
-            return models[1]
-        else:
-            return "tie"
-    except Exception as e:
-        print(f"Error in ranker_postprocess: {output}\n\n{e}")
-        return "tie"
+# def ranker_postprocess(output: str, models: List[str]) -> str:
+#     try:
+#         output = output.replace("Output ", "").replace("output ", "")
+#         output = re.sub(r"[#*]", "", output)
+#         score_pattern = re.compile(r"Model: (A|B|N/A|unsure|equal)", re.I | re.M)
+#         score = score_pattern.findall(output)
+#         if not score:
+#             return "tie"
+#         if score[0].lower() == "a":
+#             return models[0]
+#         elif score[0].lower() == "b":
+#             return models[1]
+#         else:
+#             return "tie"
+#     except Exception as e:
+#         print(f"Error in ranker_postprocess: {output}\n\n{e}")
+#         return "tie"
     
 def ranker_postprocess_multi(output: str, models: List[str]) -> List[str]:
     """
@@ -135,6 +135,27 @@ class VibeRanker(VibeRankerBase):
 
         return pd.concat(all_scored_dfs)
 
+    def generate_ranker_input(self, row, vibe_batch, models, reverse_position):
+        """
+        Generates the ranker input string for a given row and vibe batch.
+        """
+        if reverse_position:
+            return (
+                f"Properties:\n" + "\n".join(f"Property {i+1}: {vibe}" for i, vibe in enumerate(vibe_batch)) + "\n"
+                f"--------------------------------\n\nUser prompt:\n{row['question']}\n\n"
+                f"\n\nResponse A:\n{row[models[1]]}\n\n"
+                f"\n\nResponse B:\n{row[models[0]]}\n\n"
+                f"--------------------------------\n\nProperties (restated):\n" + "\n".join(f"Property {i+1}: {vibe}" for i, vibe in enumerate(vibe_batch)) + "\n"
+            )
+        else:
+            return (
+                f"Properties:\n" + "\n".join(f"Property {i+1}: {vibe}" for i, vibe in enumerate(vibe_batch)) + "\n"
+                f"--------------------------------\n\nUser prompt:\n{row['question']}\n\n"
+                f"\n\nResponse A:\n{row[models[0]]}\n\n"
+                f"\n\nResponse B:\n{row[models[1]]}\n\n"
+                f"--------------------------------\n\nProperties (restated):\n" + "\n".join(f"Property {i+1}: {vibe}" for i, vibe in enumerate(vibe_batch)) + "\n"
+            )
+
     def score_vibe(self, vibe_batch: List[str], df: pd.DataFrame, reverse_position: bool = False) -> pd.DataFrame:
         """
         Scores a batch of vibes and returns a DataFrame with the scores.
@@ -143,28 +164,10 @@ class VibeRanker(VibeRankerBase):
         models = self.models
         vibe_df["score_pos_model"] = [models for _ in range(len(vibe_df))]
 
-        if reverse_position:
-            vibe_df["ranker_inputs"] = vibe_df.apply(
-                lambda row: (
-                    f"Properties:\n" + "\n".join(f"Property {i+1}: {vibe}" for i, vibe in enumerate(vibe_batch)) + "\n"
-                    f"--------------------------------\n\nUser prompt:\n{row['question']}\n\n"
-                    f"\n\nResponse A:\n{row[models[1]]}\n\n"
-                    f"\n\nResponse B:\n{row[models[0]]}\n\n"
-                    f"--------------------------------\n\nProperties (restated):\n" + "\n".join(f"Property {i+1}: {vibe}" for i, vibe in enumerate(vibe_batch)) + "\n"
-                ),
-                axis=1
-            )
-        else:
-            vibe_df["ranker_inputs"] = vibe_df.apply(
-                lambda row: (
-                    f"Properties:\n" + "\n".join(f"Property {i+1}: {vibe}" for i, vibe in enumerate(vibe_batch)) + "\n"
-                    f"--------------------------------\n\nUser prompt:\n{row['question']}\n\n"
-                    f"\n\nResponse A:\n{row[models[0]]}\n\n"
-                    f"n\nResponse B:\n{row[models[1]]}\n\n"
-                    f"--------------------------------\n\nProperties (restated):\n" + "\n".join(f"Property {i+1}: {vibe}" for i, vibe in enumerate(vibe_batch)) + "\n"
-                ),
-                axis=1
-            )
+        vibe_df["ranker_inputs"] = vibe_df.apply(
+            lambda row: self.generate_ranker_input(row, vibe_batch, models, reverse_position),
+            axis=1
+        )
 
         ranker_prompt = getattr(ranker_prompts, self.config["ranker"].prompt)
         vibe_df["ranker_output"] = get_llm_output([
@@ -187,25 +190,20 @@ class VibeRanker(VibeRankerBase):
                 break
 
             print(f"Retry {retry + 1}: Attempting to fix {len(retry_indices)} incorrect outputs")
-            # Prepare prompts for retry
             retry_prompts = [
                 getattr(ranker_prompts, self.config["ranker"].prompt).format(inputs=vibe_df.iloc[idx]["ranker_inputs"])
                 for idx in retry_indices
             ]
-
             try:
-                # Use get_llm_output with threading for batch processing
                 new_outputs = get_llm_output(retry_prompts, "gpt-4o", cache=retry == 0)
                 for idx, new_output in zip(retry_indices, new_outputs):
                     vibe_df.at[idx, "ranker_output"] = ranker_postprocess_multi(new_output, models)
             except Exception as e:
                 print(f"Error during retry: {e}")
 
-        # Count remaining errors after retries
         final_errors = sum(len(output) != len(vibe_batch) for output in vibe_df["ranker_output"])
         error_rate = final_errors / len(vibe_df)
         print(f"Final error rate after retries: {error_rate}")
-        wandb.summary["prop_position_collisions"] = error_rate
 
         vibe_df["score_label"] = vibe_df["ranker_output"]
         vibe_df["vibe"] = [vibe_batch for _ in range(len(vibe_df))]
@@ -225,7 +223,6 @@ def build_vibe_df(vibes: List[str], df: pd.DataFrame) -> pd.DataFrame:
         vibe_dfs.append(vibe_df)
 
     combined = pd.concat(vibe_dfs).reset_index(drop=True)
-    # Drop duplicate columns
     combined = combined.loc[:, ~combined.columns.duplicated()]
     return combined
 
@@ -280,37 +277,6 @@ def setup_ranker_inputs(
             axis=1
         )
 
-    return vibe_df
-
-def merge_ranker_output(
-    vibe_df: pd.DataFrame,
-    ranker_df: pd.DataFrame,
-    models: List[str],
-    suffix: str
-) -> pd.DataFrame:
-    """
-    Helper: merges the ranker output (sem_map results) 
-    into vibe_df, and applies the ranker_postprocess function.
-    """
-    vibe_df = vibe_df.merge(
-        ranker_df[
-            [
-                "vibe",
-                "question",
-                models[0],
-                models[1],
-                "preference",
-                suffix,
-                f"raw_output{suffix}",
-            ]
-        ],
-        on=["vibe", "question", models[0], models[1], "preference"],
-        how="left",
-    )
-    vibe_df[suffix] = [
-        str(ranker_postprocess(output, model))
-        for output, model in zip(vibe_df[suffix], vibe_df["score_pos_model"])
-    ]
     return vibe_df
 
 

@@ -78,10 +78,7 @@ class VibeProposer(VibeProposerBase):
             proposer_df (pd.DataFrame): The DataFrame containing user questions & responses.
             current_vibes (List[str]): Existing vibe axes.
             num_vibes (int): Number of vibes to return.
-            **kwargs: Override any config values from proposer section:
-                - batch_size (int): Size of each batch
-                - shuffle_positions (bool): Whether to randomly swap model positions
-                - num_vibes (int): Number of vibes to return
+            **kwargs: Override any config values from proposer section (args can be found in 'configs/base.yaml')
 
         Returns:
             List[str]
