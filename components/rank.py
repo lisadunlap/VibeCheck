@@ -34,25 +34,17 @@ def ranker_postprocess(output: str, models: List[str]) -> str:
     except Exception as e:
         print(f"Error in ranker_postprocess: {output}\n\n{e}")
         return "tie"
-
+    
 def ranker_postprocess_multi(output: str, models: List[str]) -> List[str]:
     """
     Process multi-vibe ranking output into a list of model preferences.
-    
-    Args:
-        output: Raw LLM output string containing property-based rankings
-        models: List of model names [model_a, model_b]
-    
-    Returns:
-        List of strings where each element is either model_a, model_b, or "tie"
     """
     try:
-        # Clean up output
         output = output.replace("Output ", "").replace("output ", "")
         output = re.sub(r"[#*]", "", output)
         
         # Find the Ranking: section and extract property-based responses
-        ranking_pattern = re.compile(r"(?:Ranking:|^)\s*(?:Property\s+\d+:\s*(A|B|N/A|unsure|equal)(?:\s*\n|$))+", re.I | re.M)
+        ranking_pattern = re.compile(r"(?:Ranking:|^)\s*(?:Property\s+\d+:\s*(A|B|N/A|unsure|equal)\s*Analysis:.*(?:\s*\n|$))+", re.I | re.M)
         ranking_section = ranking_pattern.search(output)
         
         if not ranking_section:
@@ -101,126 +93,13 @@ class VibeRankerBase:
         """
         pass
 
-    def score_single_vibe(self, vibe: str, df: pd.DataFrame, models: List[str]) -> pd.DataFrame:
+    def score_vibe(self, vibe: str, df: pd.DataFrame, models: List[str]) -> pd.DataFrame:
         """
-        Scores a given vibe.
+        Scores a given vibe/vibes.
         """
         pass
 
 class VibeRanker(VibeRankerBase):
-    """
-    Uses LLM to rate each response pair as either A, B, or equal.
-    """
-    def __init__(self, config: OmegaConf):
-        super().__init__(config)
-        self.single_position_rank = config["ranker"].get("single_position_rank", False)
-        self.models = list(config["models"])
-
-    def score(
-        self, 
-        vibes: List[str], 
-        df: pd.DataFrame, 
-        single_position_rank: bool = None
-    ) -> pd.DataFrame:
-        """
-        Ranks the two model outputs across the given vibes (axes) using LOTUS ranking prompts.
-        If single_position_rank is not provided, it will default to the config value.
-        """
-        single_position_rank = single_position_rank if single_position_rank is not None else self.single_position_rank
-        models = self.models
-        
-        scored_dfs = []
-        all_num_collisions = []
-        for vibe in vibes:
-            df_copy = df.copy()
-            df_copy["vibe"] = vibe
-            scored_df, num_collisions = self.score_single_vibe(vibe, df_copy, models, single_position_rank)
-            scored_dfs.append(scored_df)
-            all_num_collisions.append(num_collisions)
-
-        wandb.summary["prop_position_collisions"] = np.mean(all_num_collisions)
-
-        return pd.concat(scored_dfs)
-
-    def score_single_vibe(
-        self, 
-        vibe: str, 
-        df: pd.DataFrame, 
-        models: List[str],
-        single_position_rank: bool = None
-    ) -> pd.DataFrame:
-        """
-        Scores a single vibe using LOTUS ranking prompts.
-        """
-        def create_ranker_prompt(inputs_key: str) -> str:
-            return (
-                self.judge_prompt
-                + f"""
-Here is the property and the two responses:
-{{{inputs_key}}}
-Remember to be as objective as possible and strictly adhere to the response format.
-"""
-            )
-
-        # ranker_prompt1 = create_ranker_prompt("ranker_inputs")
-        # ranker_prompt2 = create_ranker_prompt("ranker_inputs_reversed")
-
-        # Create ranker inputs (handles single or multi-position rank creation)
-        vibe_df = setup_ranker_inputs(df, models, single_position_rank)
-
-        # Perform ranker_1
-        ranker_1 = vibe_df.sem_map(
-            getattr(ranker_prompts, self.config["ranker"].prompt), return_raw_outputs=True, suffix="ranker_output_1"
-        )
-        vibe_df = merge_ranker_output(vibe_df, ranker_1, models, "ranker_output_1")
-
-        # If single_position_rank == False, don't shuffle the models, just run twice
-        if not single_position_rank:
-            ranker_2 = vibe_df.sem_map(
-                getattr(ranker_prompts, self.config["ranker"].prompt), return_raw_outputs=True, suffix="ranker_output_2"
-            )
-            vibe_df = vibe_df.merge(
-                ranker_2[
-                    ["question", models[0], models[1], "preference", "ranker_output_2"]
-                ],
-                on=["question", models[0], models[1], "preference"],
-                how="left",
-            )
-            vibe_df["ranker_output_2"] = [
-                ranker_postprocess(output, model)
-                for output, model in zip(
-                    vibe_df["ranker_output_2"], vibe_df["score_pos_model"]
-                )
-            ]
-
-            # Compute final score (excluding collisions)
-            vibe_df["score"] = vibe_df["ranker_output_1"].apply(
-                lambda x: 1 if x == models[0] else (-1 if x == models[1] else 0)
-            )
-            vibe_df["score_reversed"] = vibe_df["ranker_output_2"].apply(
-                lambda x: 1 if x == models[0] else (-1 if x == models[1] else 0)
-            )
-            vibe_df["position_matters"] = (
-                (vibe_df["score"] != -1 * vibe_df["score_reversed"])
-                & (vibe_df["score"] != 0)
-                & (vibe_df["score_reversed"] != 0)
-            )
-            vibe_df["score"] = vibe_df.apply(
-                lambda row: row["score"] if not row["position_matters"] else 0, axis=1
-            )
-            wandb.summary[f"prop_position_collisions_{vibe}"] = vibe_df["position_matters"].mean()
-            num_collisions = vibe_df["position_matters"].mean()
-        else:
-            # single-position rank scoring
-            vibe_df["score_label"] = vibe_df["ranker_output_1"]
-            vibe_df["score"] = vibe_df["score_label"].apply(
-                lambda x: 1 if x == models[0] else (-1 if x == models[1] else 0)
-            )
-            num_collisions = 0
-
-        return vibe_df, num_collisions
-
-class VibeRankerBatch(VibeRankerBase):
     """
     Uses a batch of vibes to score the models. TOOD: merge with VibeRanker
     """
@@ -237,13 +116,17 @@ class VibeRankerBatch(VibeRankerBase):
         all_scored_dfs = []
         for i in range(0, len(vibes), self.vibe_batch_size):
             vibe_batch = vibes[i:i + self.vibe_batch_size]
-            scored_df = self.score_vibe_batch(vibe_batch, df)
-            scored_df_reversed = self.score_vibe_batch(vibe_batch, df, reverse_position=True)
+
+            scored_df = self.score_vibe(vibe_batch, df)
+            scored_df_reversed = self.score_vibe(vibe_batch, df, reverse_position=True)
+
             # rename score in scored_to to score_forward and score_reversed to score_backward
             scored_df.rename(columns={"score": "score_forward", "score_reversed": "score_backward"}, inplace=True)
             scored_df_reversed.rename(columns={"score": "score_backward", "score_reversed": "score_forward"}, inplace=True)
+            
             # merge the two dataframes on conversation_id, preference, and vibe
             scored_df = scored_df.merge(scored_df_reversed[["conversation_id","vibe","score_backward"]], on=["conversation_id","vibe"], how="inner")
+            
             def is_position_bias(item1, item2):
                 return item1 == item2 and item1 != 0 and item2 != 0
             scored_df["position_matters"] = scored_df.apply(lambda row: is_position_bias(row["score_forward"], row["score_backward"]), axis=1)
@@ -252,7 +135,7 @@ class VibeRankerBatch(VibeRankerBase):
 
         return pd.concat(all_scored_dfs)
 
-    def score_vibe_batch(self, vibe_batch: List[str], df: pd.DataFrame, reverse_position: bool = False) -> pd.DataFrame:
+    def score_vibe(self, vibe_batch: List[str], df: pd.DataFrame, reverse_position: bool = False) -> pd.DataFrame:
         """
         Scores a batch of vibes and returns a DataFrame with the scores.
         """
@@ -284,14 +167,10 @@ class VibeRankerBatch(VibeRankerBase):
             )
 
         ranker_prompt = getattr(ranker_prompts, self.config["ranker"].prompt)
-        print(ranker_prompt.format(inputs=vibe_df.iloc[0]["ranker_inputs"]))
-        print("++++++++++++++++++++++++++++++++++++")
         vibe_df["ranker_output"] = get_llm_output([
                 ranker_prompt.format(inputs=vibe_df.iloc[idx]["ranker_inputs"])
                 for idx in range(len(vibe_df))
             ], self.config["ranker"].model, cache=True)
-        print(vibe_df.iloc[0]["ranker_output"])
-        exit()
         vibe_df["ranker_output"] = [
             ranker_postprocess_multi(output, models)
             for output in vibe_df["ranker_output"]
@@ -308,7 +187,6 @@ class VibeRankerBatch(VibeRankerBase):
                 break
 
             print(f"Retry {retry + 1}: Attempting to fix {len(retry_indices)} incorrect outputs")
-
             # Prepare prompts for retry
             retry_prompts = [
                 getattr(ranker_prompts, self.config["ranker"].prompt).format(inputs=vibe_df.iloc[idx]["ranker_inputs"])
@@ -446,7 +324,7 @@ class VibeRankerEmbedding(VibeRanker):
         super().__init__(config)
         self.embedding_model = config["ranker"]["embedding_model"]
 
-    def score_single_vibe(self, vibe: str, df: pd.DataFrame, models: List[str], single_position_rank: bool = None) -> tuple[pd.DataFrame, float]:
+    def score_vibe(self, vibe: str, df: pd.DataFrame, models: List[str], single_position_rank: bool = None) -> tuple[pd.DataFrame, float]:
         """
         Scores a single vibe using embedding similarity.
         Returns tuple of (scored_dataframe, num_collisions=0) to match parent class interface.
@@ -488,6 +366,7 @@ class VibeRankerEmbedding(VibeRanker):
 
         display_df["score_pos_model"] = [models for _ in range(len(df))] # hack: need this for training prediction models
         # train_embedding_model(df, models, vibe, self.embedding_model, self.config)
+        display_df["vibe"] = vibe
         return display_df, 0  
     
     @staticmethod

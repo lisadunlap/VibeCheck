@@ -70,7 +70,7 @@ If you use this repo in your research, please cite it as follows and ideally use
 
 ## TODO
 
-- [ ] Add a way to only optimize for model matching if you only care to find differentiating qualities
+- [X] Add a way to only optimize for model matching if you only care to find differentiating qualities
 - [ ] Add different vibe selection methods (LARS, filter by coeffs, etc)
 - [ ] Add multi-model comparison
 - [ ] Add absolute ranking option

@@ -105,11 +105,12 @@ def vibe_discovery(
     pref_dist_plot.write_html(os.path.join(output_dir, "preference_distribution.html"))
 
     # Propose vibes
-    vibes, proposer_results = VibeProposer(
+    vibes = VibeProposer(
         models,
         config,
-    ).propose(df, current_vibes=current_vibes)
-    print(vibes)
+    ).propose(df.sample(config["proposer"].num_samples, random_state=42).reset_index(drop=True), 
+              current_vibes=current_vibes, 
+              num_vibes=config.num_vibes)
     print("Proposed Vibes:")
     print("* " + "\n* ".join(vibes))
     print("--------------------------------")
@@ -117,7 +118,6 @@ def vibe_discovery(
     vibes_df = pd.DataFrame({"vibes": vibes})
     wandb.log({"vibes": wandb.Table(dataframe=vibes_df)})
     vibes_df.to_csv(os.path.join(output_dir, "vibes.csv"), index=False)
-
     return {"vibes": vibes, "pref_dist_plot": pref_dist_plot}
 
 
@@ -139,7 +139,7 @@ def vibe_validation(
         get_pref_score,
         create_side_by_side_plot,
     )
-    from components.rank import VibeRanker, VibeRankerEmbedding, VibeRankerBatch
+    from components.rank import VibeRankerEmbedding, VibeRanker
 
     # Change model for ranking
     lm = LM(model=config.ranker.model, cache=cache)
@@ -157,13 +157,7 @@ def vibe_validation(
             single_position_rank=config.ranker.single_position_rank,
         )
     else:
-        vibe_ranker = VibeRankerBatch(config)
-        # if config.ranker.vibe_batch_size > 1:
-        #     vibe_ranker = VibeRankerBatch(config)
-        # else:
-        #     vibe_ranker = VibeRanker(
-        #         config,
-        #     )
+        vibe_ranker = VibeRanker(config)
         vibe_df = vibe_ranker.score(
             vibes_to_rank,
             df,
