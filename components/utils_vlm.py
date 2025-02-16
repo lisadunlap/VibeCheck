@@ -24,14 +24,14 @@ from components.utils_general import (
 
 logging.basicConfig(level=logging.ERROR)
 
-if not os.path.exists("cache/llm_cache"):
-    os.makedirs("cache/llm_cache")
+if not os.path.exists("cache/vlm_cache"):
+    os.makedirs("cache/vlm_cache")
 
-if not os.path.exists("cache/llm_embed_cache"):
-    os.makedirs("cache/llm_embed_cache")
+if not os.path.exists("cache/vlm_embed_cache"):
+    os.makedirs("cache/vlm_embed_cache")
 
-llm_cache = lmdb.open("cache/llm_cache", map_size=int(1e11))
-llm_embed_cache = lmdb.open("cache/llm_embed_cache", map_size=int(1e11))
+vlm_cache = lmdb.open("cache/vlm_cache", map_size=int(1e11))
+vlm_embed_cache = lmdb.open("cache/vlm_embed_cache", map_size=int(1e11))
 
 # Function to convert binary data into an image
 def get_image_from_binary(image_data):
@@ -45,7 +45,7 @@ def encode_image(image):
         return base64.b64encode(output.getvalue()).decode("utf-8")
     
     
-def get_llm_output(
+def get_vlm_output(
     prompt: str | List[str], model: str, cache=True, system_prompt=None, history=[], max_tokens=256
 ) -> str | List[str]:
     # Handle list of prompts with thread pool
@@ -53,7 +53,7 @@ def get_llm_output(
         with concurrent.futures.ThreadPoolExecutor(max_workers=32) as executor:
             futures = [
                 executor.submit(
-                    get_llm_output, p, model, cache, system_prompt, history, max_tokens
+                    get_vlm_output, p, model, cache, system_prompt, history, max_tokens
                 )
                 for p in prompt
             ]
@@ -99,12 +99,12 @@ def get_llm_output(
         )
     key = json.dumps([model, messages])
 
-    cached_value = get_from_cache(key, llm_cache) if cache else None
+    cached_value = get_from_cache(key, vlm_cache) if cache else None
     if cached_value is not None:
-        logging.debug(f"LLM Cache Hit")
+        logging.debug(f"VLM Cache Hit")
         return cached_value
     else:
-        logging.debug(f"LLM Cache Miss")
+        logging.debug(f"VLM Cache Miss")
 
     for _ in range(3):
         try:
@@ -165,11 +165,11 @@ def get_llm_output(
                     .replace("<|eot_id|>", "")
                 )
 
-            save_to_cache(key, response, llm_cache)
+            save_to_cache(key, response, vlm_cache)
             return response
 
         except Exception as e:
-            logging.error(f"LLM Error: {e}")
+            logging.error(f"VLM Error: {e}")
             # if error is Error Code: 400, then it is likely that the prompt is too long, so truncate it
             if "Error code: 400" in str(e):
                 messages = (
@@ -181,15 +181,15 @@ def get_llm_output(
                 )
             else:
                 raise e
-    return "LLM Error: Cannot get response."
+    return "VLM Error: Cannot get response."
 
 
-def get_llm_embedding(prompt: str | List[str], model: str) -> str | List[str]:
+def get_vlm_embedding(prompt: str | List[str], model: str) -> str | List[str]:
     # Handle list of prompts with thread pool
     if isinstance(prompt, list):
         with concurrent.futures.ThreadPoolExecutor(max_workers=32) as executor:
             futures = [
-                executor.submit(get_llm_embedding, p, model)
+                executor.submit(get_vlm_embedding, p, model)
                 for p in prompt
             ]
             return [f.result() for f in tqdm(concurrent.futures.as_completed(futures), total=len(futures))]
@@ -199,13 +199,13 @@ def get_llm_embedding(prompt: str | List[str], model: str) -> str | List[str]:
     client = OpenAI()
     key = json.dumps([model, prompt])
 
-    cached_value = get_emb_from_cache(key, llm_embed_cache)
+    cached_value = get_emb_from_cache(key, vlm_embed_cache)
 
     if cached_value is not None:
-        logging.debug(f"LLM Cache Hit")
+        logging.debug(f"VLM Cache Hit")
         return cached_value
     else:
-        logging.debug(f"LLM Cache Miss")
+        logging.debug(f"VLM Cache Miss")
 
     for _ in range(3):
         try:
@@ -213,28 +213,28 @@ def get_llm_embedding(prompt: str | List[str], model: str) -> str | List[str]:
             embedding = (
                 client.embeddings.create(input=[text], model=model).data[0].embedding
             )
-            save_emb_to_cache(key, embedding, llm_embed_cache)
+            save_emb_to_cache(key, embedding, vlm_embed_cache)
             
             return embedding
         except Exception as e:
-            logging.error(f"LLM Error: {e}")
+            logging.error(f"VLM Error: {e}")
             continue
 
     return None
 
 
-def test_get_llm_output():
+def test_get_vlm_output():
     prompt = "hello"
     model = "gpt-4"
-    completion = get_llm_output(prompt, model)
+    completion = get_vlm_output(prompt, model)
     print(f"{model=}, {completion=}")
     model = "gpt-3.5-turbo"
-    completion = get_llm_output(prompt, model)
+    completion = get_vlm_output(prompt, model)
     print(f"{model=}, {completion=}")
     model = "vicuna"
-    completion = get_llm_output(prompt, model)
+    completion = get_vlm_output(prompt, model)
     print(f"{model=}, {completion=}")
 
 
 if __name__ == "__main__":
-    test_get_llm_output()
+    test_get_vlm_output()
