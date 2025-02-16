@@ -96,10 +96,18 @@ def __main__():
     df = pd.read_csv(args.data_path)
     if args.test:
         df = df.head(10)
+        
+
     df["judge_input"] = df.apply(
         lambda row: f"Prompt: {row['question']}\nOutput A: {row[args.models[0]]}\nOutput B: {row[args.models[1]]}",
         axis=1,
     )
+    
+    df["judge_input_reversed"] = df.apply(
+        lambda row: f"Prompt: {row['question']}\nOutput A: {row[args.models[1]]}\nOutput B: {row[args.models[0]]}",
+        axis=1,
+    )
+
     df["judge_input_reversed"] = df.apply(
         lambda row: f"Prompt: {row['question']}\nOutput A: {row[args.models[1]]}\nOutput B: {row[args.models[0]]}",
         axis=1,
