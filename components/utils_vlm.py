@@ -5,15 +5,17 @@ import threading
 from typing import List
 import concurrent.futures
 from tqdm import tqdm
-import io
 
 import lmdb
 import openai
 from openai import OpenAI
 import anthropic
 import datetime
-import numpy as np
+import numpy as np  
+
 import base64
+from PIL import Image
+import io
 
 from components.utils_general import (
     get_from_cache,
@@ -33,20 +35,23 @@ if not os.path.exists("cache/vlm_embed_cache"):
 vlm_cache = lmdb.open("cache/vlm_cache", map_size=int(1e11))
 vlm_embed_cache = lmdb.open("cache/vlm_embed_cache", map_size=int(1e11))
 
-# Function to convert binary data into an image
 def get_image_from_binary(image_data):
+    """
+    Function to convert binary data into an image
+    """
     image_bytes = eval(image_data)["bytes"]  # Convert string to dictionary and get bytes
     return Image.open(io.BytesIO(image_bytes))
 
-# Function to encode image as base64 for OpenAI API
 def encode_image(image):
+    """
+    Function to encode image as base64 for OpenAI API
+    """
     with io.BytesIO() as output:
         image.save(output, format="PNG")
         return base64.b64encode(output.getvalue()).decode("utf-8")
     
-    
 def get_vlm_output(
-    prompt: str | List[str], model: str, cache=True, system_prompt=None, history=[], max_tokens=256
+    prompt: str | List[str], model: str, images: List[str], cache=True, system_prompt=None, history=[], max_tokens=256
 ) -> str | List[str]:
     # Handle list of prompts with thread pool
     if isinstance(prompt, list):
@@ -226,13 +231,13 @@ def get_vlm_embedding(prompt: str | List[str], model: str) -> str | List[str]:
 def test_get_vlm_output():
     prompt = "hello"
     model = "gpt-4"
-    completion = get_vlm_output(prompt, model)
+    completion = get_vlm_output(prompt, model, images)
     print(f"{model=}, {completion=}")
     model = "gpt-3.5-turbo"
-    completion = get_vlm_output(prompt, model)
+    completion = get_vlm_output(prompt, model, images)
     print(f"{model=}, {completion=}")
     model = "vicuna"
-    completion = get_vlm_output(prompt, model)
+    completion = get_vlm_output(prompt, model, images)
     print(f"{model=}, {completion=}")
 
 
