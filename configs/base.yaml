@@ -7,8 +7,7 @@ wandb: true # If true, logs results to Weights & Biases.
 
 output_dir: "./vibecheck_results" # Directory to save results.
 
-# List of two model names to compare. These should match the column names in the CSV.
-models: null     # Required argument
+models: null  # List of two model names to compare. These should match the column names in the CSV.
 
 # Name of the Weights & Biases project where results will be logged.
 project_name: "vibecheck"
@@ -30,14 +29,16 @@ proposer:
   # Number of samples to use when proposing vibes. Higher numbers will give more comprehensive but slower results.
   num_samples: 30
   model: "gpt-4o"
-  # num_vibes_per_iteration: 10 # Number of vibes to propose per iteration.
   shuffle_positions: false # If true, shuffles the positions of the models in the prompt for finding vibes. This is best when you are using the axis proposal method.
   batch_size: 5 # Number of samples to use for each batch (LLM call) in the vibe proposal.
   embedding_model: "text-embedding-3-small" # Model to use for embedding analysis.
+  prompt: proposer_freeform # Type of prompt to use for vibe proposal. Found in components/prompts/proposer_prompts.py
+  iteration_prompt: proposer_freeform_iteration # Type of prompt to use for vibe proposal. Found in components/prompts/proposer_prompts.py
+  reduction_prompt: reduce_freeform # Type of prompt to use for axis reduction. Found in components/prompts/reduction_prompts.py
 
 # Maximum number of vibes to use in final analysis. This limits the number of 
 # behavioral dimensions that will be analyzed.
-num_vibes: 5
+num_vibes: 6
 
 # If true, runs analysis on a small subset of data for testing purposes.
 test: false
@@ -50,7 +51,17 @@ ranker:
   embedding_model: "text-embedding-3-small" # Model to use for embedding analysis.
   embedding_rank: false # If true, ranks model outputs using embedding similarity. This is much cheaper than the LLM ranker, but way less accurate.
   vibe_batch_size: 5 # batch ranker
+  prompt: ranker_prompt_multi # Type of prompt to use for ranker. Found in components/prompts/ranker_prompts.py
 
 filter:
   min_score_diff: 0.05 # Minimum score difference to consider a vibe.
   min_pref_score_diff: 0.05 # Minimum preference score difference to consider a vibe.
+
+# uncomment to use the paper definition of vibes
+# proposer:
+#   prompt: proposer_freeform_axis
+#   iteration_prompt: proposer_freeform_iteration_axis
+#   reduction_prompt: reduce_freeform_axis
+
+# ranker:
+#   prompt: ranker_freeform_axis

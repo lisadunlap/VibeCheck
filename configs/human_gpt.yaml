@@ -5,7 +5,7 @@ data_path: "data/gpt_human_sampled.csv"  # Required argument
 models: ["human_answers", "chatgpt_answers"]      # Required argument
 
 
-num_samples: 200 
+num_samples: 100 
 
 wandb: true # If true, logs results to Weights & Biases.
 

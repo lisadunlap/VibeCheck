@@ -12,7 +12,12 @@ from plotly.subplots import make_subplots
 from plotly import graph_objects as go
 from sklearn.utils import shuffle
 from sklearn.preprocessing import StandardScaler
+import torch
+import torch.nn as nn
+import torch.optim as optim
 
+from tqdm import tqdm
+from torch.utils.data import TensorDataset, DataLoader
 
 def train_and_evaluate_model(
     vibe_df: pd.DataFrame,
@@ -453,3 +458,136 @@ def create_vibe_correlation_plot(vibe_df: pd.DataFrame, models: List[str]):
     )
 
     return fig
+
+class EmbeddingMLP(nn.Module):
+    """PyTorch MLP for embedding classification."""
+    def __init__(self, input_dim: int, hidden_dims: list = [100, 50]):
+        super().__init__()
+        layers = []
+        prev_dim = input_dim
+        
+        for hidden_dim in hidden_dims:
+            layers.extend([
+                nn.Linear(prev_dim, hidden_dim),
+                nn.ReLU(),
+                nn.Dropout(0.2)
+            ])
+            prev_dim = hidden_dim
+        
+        layers.append(nn.Linear(prev_dim, 1))
+        layers.append(nn.Sigmoid())
+        
+        self.model = nn.Sequential(*layers)
+    
+    def forward(self, x):
+        return self.model(x)
+
+def train_embedding_classifier(df: pd.DataFrame, 
+                            n_bootstrap: int = 10,
+                            device: str = "cuda" if torch.cuda.is_available() else "cpu",
+                            batch_size: int = 32,
+                            epochs: int = 10,
+                            lr: float = 0.001) -> dict:
+    """
+    Train a PyTorch MLP classifier on embedding differences between two models and compute confidence intervals.
+    
+    Args:
+        df: DataFrame containing model_a_embedding and model_b_embedding columns
+        n_bootstrap: Number of bootstrap iterations for confidence intervals
+        device: Device to run the model on ("cuda" or "cpu")
+        batch_size: Batch size for training
+        epochs: Number of training epochs
+        lr: Learning rate
+    
+    Returns:
+        dict: Contains classifier, accuracies, and confidence intervals
+    """
+    # Create training data
+    X_diff_0 = np.array([a - b for a, b in zip(df["model_a_embedding"], df["model_b_embedding"])])
+    X_diff_1 = np.array([b - a for a, b in zip(df["model_a_embedding"], df["model_b_embedding"])])
+    X = np.vstack([X_diff_0, X_diff_1])
+    y = np.hstack([np.zeros(len(df)), np.ones(len(df))])
+    
+    # Initial train-test split
+    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+    
+    def train_model(X_train, y_train, X_test, y_test):
+        # Convert to PyTorch tensors
+        X_train_tensor = torch.FloatTensor(X_train).to(device)
+        y_train_tensor = torch.FloatTensor(y_train).to(device)
+        X_test_tensor = torch.FloatTensor(X_test).to(device)
+        y_test_tensor = torch.FloatTensor(y_test).to(device)
+        
+        # Create data loaders
+        train_dataset = TensorDataset(X_train_tensor, y_train_tensor.unsqueeze(1))
+        train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
+        
+        # Initialize model
+        model = EmbeddingMLP(input_dim=X_train.shape[1]).to(device)
+        criterion = nn.BCELoss()
+        optimizer = torch.optim.Adam(model.parameters(), lr=lr)
+        
+        # Training loop
+        model.train()
+        for epoch in range(epochs):
+            for batch_X, batch_y in train_loader:
+                optimizer.zero_grad()
+                outputs = model(batch_X)
+                loss = criterion(outputs, batch_y)
+                loss.backward()
+                optimizer.step()
+        
+        # Evaluation
+        model.eval()
+        with torch.no_grad():
+            train_preds = (model(X_train_tensor) >= 0.5).float()
+            test_preds = (model(X_test_tensor) >= 0.5).float()
+            
+            train_acc = (train_preds.squeeze() == y_train_tensor).float().mean().item()
+            test_acc = (test_preds.squeeze() == y_test_tensor).float().mean().item()
+        
+        return model, train_acc, test_acc
+    
+    # Train base model
+    base_model, train_acc, test_acc = train_model(X_train, y_train, X_test, y_test)
+    
+    # Bootstrap for confidence intervals
+    print("Running bootstrap iterations...")
+    bootstrap_train_acc = []
+    bootstrap_test_acc = []
+    
+    for _ in tqdm(range(n_bootstrap)):
+        # Sample with replacement
+        train_idx = np.random.choice(len(X_train), size=len(X_train), replace=True)
+        test_idx = np.random.choice(len(X_test), size=len(X_test), replace=True)
+        
+        X_train_boot = X_train[train_idx]
+        y_train_boot = y_train[train_idx]
+        X_test_boot = X_test[test_idx]
+        y_test_boot = y_test[test_idx]
+        
+        # Train and evaluate
+        _, train_acc_boot, test_acc_boot = train_model(
+            X_train_boot, y_train_boot, X_test_boot, y_test_boot
+        )
+        
+        bootstrap_train_acc.append(train_acc_boot)
+        bootstrap_test_acc.append(test_acc_boot)
+    
+    # Calculate confidence intervals (95%)
+    train_ci = np.percentile(bootstrap_train_acc, [2.5, 97.5])
+    test_ci = np.percentile(bootstrap_test_acc, [2.5, 97.5])
+    
+    results = {
+        "classifier": base_model,
+        "train_accuracy": train_acc,
+        "test_accuracy": test_acc,
+        "train_ci": train_ci,
+        "test_ci": test_ci
+    }
+    
+    print(f"PyTorch MLP Embedding Classifier Results:")
+    print(f"Train accuracy: {train_acc:.3f} (95% CI: [{train_ci[0]:.3f}, {train_ci[1]:.3f}])")
+    print(f"Test accuracy: {test_acc:.3f} (95% CI: [{test_ci[0]:.3f}, {test_ci[1]:.3f}])")
+    
+    return results
