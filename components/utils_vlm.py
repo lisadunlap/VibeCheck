@@ -58,11 +58,14 @@ def get_vlm_output(
         with concurrent.futures.ThreadPoolExecutor(max_workers=32) as executor:
             futures = [
                 executor.submit(
-                    get_vlm_output, p, model, cache, system_prompt, history, max_tokens
+                    get_vlm_output, p, model, images, cache, system_prompt, history, max_tokens
                 )
                 for p in prompt
             ]
             return [f.result() for f in tqdm(concurrent.futures.as_completed(futures), total=len(futures))]
+
+    # Encode images
+    encoded_images = [encode_image(Image.open(image_path)) for image_path in images]
 
     # Original single prompt logic
     openai.api_base = (
@@ -86,12 +89,12 @@ def get_vlm_output(
             [{"role": "system", "content": systems_prompt}]
             + history
             + [
-                {"role": "user", "content": prompt},
+                {"role": "user", "content": f"Images: {encoded_images}"}
             ]
         )
     elif "claude" in model:
         messages = history + [
-            {"role": "user", "content": prompt},
+            {"role": "user", "content": f"Images: {encoded_images}"}
         ]
     else:
         # messages = prompt
@@ -99,7 +102,7 @@ def get_vlm_output(
             [{"role": "system", "content": systems_prompt}]
             + history
             + [
-                {"role": "user", "content": prompt},
+                {"role": "user", "content": f"Images: {encoded_images}"}
             ]
         )
     key = json.dumps([model, messages])
@@ -231,6 +234,7 @@ def get_vlm_embedding(prompt: str | List[str], model: str) -> str | List[str]:
 def test_get_vlm_output():
     prompt = "hello"
     model = "gpt-4"
+    images = []
     completion = get_vlm_output(prompt, model, images)
     print(f"{model=}, {completion=}")
     model = "gpt-3.5-turbo"
