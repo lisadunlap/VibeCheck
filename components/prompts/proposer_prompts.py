@@ -12,6 +12,27 @@ Remember that these differences should be human interpretable and that the diffe
 If there are no substantive differences between the outputs, please respond with only "No differences found."
 """
 
+proposer_prompt_freeform_visual = """
+You are a machine learning researcher trying to figure out the major differences between the behaviors of two image generation models by finding differences in their responses to the same set of questions and seeing if these differences correspond with user preferences. Write down as many differences as you can find between the two outputs. Please format your differences as a list of properties that appear more in one output than the other.
+
+Below are multiple sets of questions and responses, separated by dashed lines. For each set, analyze the differences between Model 1 and Model 2. What properties are seen in the responses from Model 1 that are not seen in the responses from Model 2? What properties are seen in the responses from Model 2 that are not seen in the responses from Model 1?
+
+{combined_responses}
+
+The format should be a list of properties that appear more in one output than the other in the format of a short description of the property. An example of a possible output is,
+- "vibrant neon color scheme"
+- "oil painting texture with visible brushstrokes"
+- "cinematic lighting with dramatic shadows"
+- "minimalist flat design composition"
+- "surreal dreamlike elements"
+- "analog film grain effect"
+
+Note that this example is not at all exhaustive, but rather just an example of the format. Consider differences on many different axes such as art style, color palette and contrast, composition and perspective, texture and detail level, lighting and shadow, and any other axis that you can think of. 
+    
+Remember that these properties should be human interpretable and that the differences should be concise (<= 10 words), substantive and objective. Write down as many properties as you can find. Do not explain which model has which property, simply describe the property.
+If there are no substantive differences between the outputs, please respond with only "No differences found."
+"""
+
 proposer_prompt_freeform_iteration = """You are a machine learning researcher trying to figure out the major differences between the behaviors of two llms by finding differences in their responses to the same set of questions and seeing if these differences correspond with user preferences. I have already found some differences between the two outputs, but there are many more differences to find. Write down as many differences as you can find between the two outputs which are not already in the list of differences. Please format your differences as a list of properties that appear more in one output than the other.
 
 Below are multiple sets of questions and responses, separated by dashed lines. For each set, analyze the differences between Model 1 and Model 2. What properties are seen in the responses from Model 1 that are not seen in the responses from Model 2? What properties are seen in the responses from Model 2 that are not seen in the responses from Model 1? Here are the differences I have already found and the questions and responses:
