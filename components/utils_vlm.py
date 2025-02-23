@@ -17,6 +17,9 @@ import base64
 from PIL import Image
 import io
 
+import pandas as pd
+import ast
+
 from components.utils_general import (
     get_from_cache,
     save_to_cache,
@@ -39,19 +42,20 @@ def get_image_from_binary(image_data):
     """
     Function to convert binary data into an image
     """
-    image_bytes = eval(image_data)["bytes"]  # Convert string to dictionary and get bytes
-    return Image.open(io.BytesIO(image_bytes))
+    return Image.open(io.BytesIO(image_data))
 
 def encode_image(image):
     """
     Function to encode image as base64 for OpenAI API
     """
+    image = image.resize((128, 128))
+    
     with io.BytesIO() as output:
         image.save(output, format="PNG")
         return base64.b64encode(output.getvalue()).decode("utf-8")
     
 def get_vlm_output(
-    prompt: str | List[str], model: str, images: List[str], cache=True, system_prompt=None, history=[], max_tokens=256
+    prompt: str | List[str], model: str, images: List[Image.Image], cache=True, system_prompt=None, history=[], max_tokens=256
 ) -> str | List[str]:
     # Handle list of prompts with thread pool
     if isinstance(prompt, list):
@@ -64,9 +68,19 @@ def get_vlm_output(
             ]
             return [f.result() for f in tqdm(concurrent.futures.as_completed(futures), total=len(futures))]
 
-    # Encode images
-    encoded_images = [encode_image(Image.open(image_path)) for image_path in images]
+    # Encode images for passing to APIs
+    encoded_images = [encode_image(image) for image in images]
 
+    # Check token count
+    total_tokens = len(json.dumps([model, history, encoded_images]))  # Estimate token count
+    
+    if total_tokens > 8192:  # Adjust based on the model's limit
+        print("Total token count exceeds the model's limit.")
+        return "Error: Token limit exceeded."
+
+    for i, encoded_image in enumerate(encoded_images):
+        print(f"Encoded image {i} size: {len(encoded_image)} bytes")
+        
     # Original single prompt logic
     openai.api_base = (
         "https://api.openai.com/v1" if model != "llama-3-8b" else "http://localhost:8001/v1"
@@ -234,7 +248,11 @@ def get_vlm_embedding(prompt: str | List[str], model: str) -> str | List[str]:
 def test_get_vlm_output():
     prompt = "hello"
     model = "gpt-4"
-    images = []
+    df = pd.read_csv("~/VibeCheck/data/sample_open-binary.csv")
+    images = [
+        get_image_from_binary(ast.literal_eval(df.iloc[1, 1])["bytes"]),
+        #get_image_from_binary(ast.literal_eval(df.iloc[2, 1])["bytes"])
+    ]
     completion = get_vlm_output(prompt, model, images)
     print(f"{model=}, {completion=}")
     model = "gpt-3.5-turbo"
