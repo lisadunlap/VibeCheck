@@ -48,11 +48,12 @@ def encode_image(image):
     """
     Function to encode image as base64 for OpenAI API
     """
-    image = image.resize((128, 128))
+    image = image.resize((256, 256))
     
     with io.BytesIO() as output:
         image.save(output, format="PNG")
         return base64.b64encode(output.getvalue()).decode("utf-8")
+
     
 def get_vlm_output(
     prompt: str | List[str], model: str, images: List[Image.Image], cache=True, system_prompt=None, history=[], max_tokens=256
