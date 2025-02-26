@@ -68,15 +68,8 @@ def get_vlm_output(
             ]
             return [f.result() for f in tqdm(concurrent.futures.as_completed(futures), total=len(futures))]
 
-    # Encode images for passing to APIs
-    encoded_images = [encode_image(image) for image in images]
 
-    # Check token count
-    total_tokens = len(json.dumps([model, history, encoded_images]))  # Estimate token count
-    
-    if total_tokens > 8192:  # Adjust based on the model's limit
-        print("Total token count exceeds the model's limit.")
-        return "Error: Token limit exceeded."
+    encoded_images = [encode_image(image) for image in images]
 
     for i, encoded_image in enumerate(encoded_images):
         print(f"Encoded image {i} size: {len(encoded_image)} bytes")
@@ -99,13 +92,26 @@ def get_vlm_output(
     )
 
     if "gpt" in model:
-        messages = (
-            [{"role": "system", "content": systems_prompt}]
-            + history
-            + [
-                {"role": "user", "content": f"Images: {encoded_images}"}
+        if model == "gpt-4o":  
+            encoded_images = [encode_image(image) for image in images]  # Convert images to base64
+            messages = [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": prompt},
+                        {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{encoded_images[0]}"}}  # Use the first image
+                        # For multiple images, merge side by side
+                    ]
+                }
             ]
-        )
+        else:
+            messages = (
+                [{"role": "system", "content": systems_prompt}]
+                + history
+                + [
+                    {"role": "user", "content": f"Images: {encoded_images}"}
+                ]
+            )
     elif "claude" in model:
         messages = history + [
             {"role": "user", "content": f"Images: {encoded_images}"}
@@ -246,8 +252,8 @@ def get_vlm_embedding(prompt: str | List[str], model: str) -> str | List[str]:
 
 
 def test_get_vlm_output():
-    prompt = "hello"
-    model = "gpt-4"
+    prompt = "descibe this image"
+    model = "gpt-4o"
     df = pd.read_csv("~/VibeCheck/data/sample_open-binary.csv")
     images = [
         get_image_from_binary(ast.literal_eval(df.iloc[1, 1])["bytes"]),
@@ -255,13 +261,14 @@ def test_get_vlm_output():
     ]
     completion = get_vlm_output(prompt, model, images)
     print(f"{model=}, {completion=}")
-    model = "gpt-3.5-turbo"
-    completion = get_vlm_output(prompt, model, images)
-    print(f"{model=}, {completion=}")
-    model = "vicuna"
-    completion = get_vlm_output(prompt, model, images)
-    print(f"{model=}, {completion=}")
+    # model = "gpt-3.5-turbo"
+    # completion = get_vlm_output(prompt, model, images)
+    # print(f"{model=}, {completion=}")
+    # model = "vicuna"
+    # completion = get_vlm_output(prompt, model, images)
+    # print(f"{model=}, {completion=}")
 
 
 if __name__ == "__main__":
     test_get_vlm_output()
+    
