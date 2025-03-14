@@ -16,24 +16,6 @@ from lotus.models import LM, SentenceTransformersRM
 from lotus.cache import CacheConfig, CacheType, CacheFactory
 from components.utils_llm import get_llm_embedding, get_llm_output
 import components.prompts.ranker_prompts as ranker_prompts
-
-# def ranker_postprocess(output: str, models: List[str]) -> str:
-#     try:
-#         output = output.replace("Output ", "").replace("output ", "")
-#         output = re.sub(r"[#*]", "", output)
-#         score_pattern = re.compile(r"Model: (A|B|N/A|unsure|equal)", re.I | re.M)
-#         score = score_pattern.findall(output)
-#         if not score:
-#             return "tie"
-#         if score[0].lower() == "a":
-#             return models[0]
-#         elif score[0].lower() == "b":
-#             return models[1]
-#         else:
-#             return "tie"
-#     except Exception as e:
-#         print(f"Error in ranker_postprocess: {output}\n\n{e}")
-#         return "tie"
     
 def ranker_postprocess_multi(output: str, models: List[str]) -> List[str]:
     """
@@ -118,19 +100,21 @@ class VibeRanker(VibeRankerBase):
             vibe_batch = vibes[i:i + self.vibe_batch_size]
 
             scored_df = self.score_vibe(vibe_batch, df)
-            scored_df_reversed = self.score_vibe(vibe_batch, df, reverse_position=True)
+            if single_position_rank:
+                scored_df_reversed = self.score_vibe(vibe_batch, df, reverse_position=True)
 
-            # rename score in scored_to to score_forward and score_reversed to score_backward
-            scored_df.rename(columns={"score": "score_forward", "score_reversed": "score_backward"}, inplace=True)
-            scored_df_reversed.rename(columns={"score": "score_backward", "score_reversed": "score_forward"}, inplace=True)
-            
-            # merge the two dataframes on conversation_id, preference, and vibe
-            scored_df = scored_df.merge(scored_df_reversed[["conversation_id","vibe","score_backward"]], on=["conversation_id","vibe"], how="inner")
-            
-            def is_position_bias(item1, item2):
-                return item1 == item2 and item1 != 0 and item2 != 0
-            scored_df["position_matters"] = scored_df.apply(lambda row: is_position_bias(row["score_forward"], row["score_backward"]), axis=1)
-            scored_df["score"] = scored_df.apply(lambda row: row["score_forward"] if not row["position_matters"] else 0, axis=1)
+                # rename score in scored_to to score_forward and score_reversed to score_backward
+                scored_df.rename(columns={"score": "score_forward", "score_reversed": "score_backward"}, inplace=True)
+                scored_df_reversed.rename(columns={"score": "score_backward", "score_reversed": "score_forward"}, inplace=True)
+                
+                # merge the two dataframes on conversation_id, preference, and vibe
+                scored_df = scored_df.merge(scored_df_reversed[["conversation_id","vibe","score_backward"]], on=["conversation_id","vibe"], how="inner")
+                
+                def is_position_bias(item1, item2):
+                    return item1 == item2 and item1 != 0 and item2 != 0
+                scored_df["position_matters"] = scored_df.apply(lambda row: is_position_bias(row["score_forward"], row["score_backward"]), axis=1)
+                scored_df["score"] = scored_df.apply(lambda row: row["score_forward"] if not row["position_matters"] else 0, axis=1)
+
             all_scored_dfs.append(scored_df)
 
         return pd.concat(all_scored_dfs)
@@ -289,15 +273,20 @@ class VibeRankerEmbedding(VibeRanker):
     def __init__(self, config: OmegaConf):
         super().__init__(config)
         self.embedding_model = config["ranker"]["embedding_model"]
+        self.vibe_batch_size = 1
 
-    def score_vibe(self, vibe: str, df: pd.DataFrame, models: List[str], single_position_rank: bool = None) -> tuple[pd.DataFrame, float]:
+    def score_vibe(self, vibe: List[str], df: pd.DataFrame) -> tuple[pd.DataFrame, float]:
         """
         Scores a single vibe using embedding similarity.
         Returns tuple of (scored_dataframe, num_collisions=0) to match parent class interface.
         """
-        
+        print(f"Scoring vibe: {vibe}")
+        vibe = vibe[0]
+        print("--------------------------------")
         df = df.copy()
-        template = "Rate how much the response has the property '{vibe}'"
+        df["vibe"] = [vibe] * len(df)
+        template = "Given an assistant response, rate how much it has the following property: '{vibe}'"
+        # template = "Rate how much the response has the property '{vibe}'"
         df["vibe_embedding"] = get_llm_embedding(df["vibe"].apply(lambda x: template.format(vibe=x)).tolist(), self.embedding_model)
         df["vibe_embedding"] = df["vibe_embedding"].apply(lambda x: x / np.linalg.norm(x))
 
@@ -317,23 +306,24 @@ class VibeRankerEmbedding(VibeRanker):
             axis=1,
         )
 
-        self.plot_embedding_similarity(vibe, df, models)
+        self.plot_embedding_similarity(vibe, df, self.models)
 
         # Calculate scores
-        delta = 0.05
-        df["score"] = df.apply(
-            lambda row: 1 if row["model_a_vibe_sim"] > row["model_b_vibe_sim"] + delta else (-1 if row["model_a_vibe_sim"] < row["model_b_vibe_sim"] - delta else 0),
-            axis=1,
-        )
+        # delta = 0.05
+        # df["score"] = df.apply(
+        #     lambda row: 1 if row["model_a_vibe_sim"] > row["model_b_vibe_sim"] + delta else (-1 if row["model_a_vibe_sim"] < row["model_b_vibe_sim"] - delta else 0),
+        #     axis=1,
+        # )
+
+        df['score_pos_model'] = df['model_a_vibe_sim'] - df['model_b_vibe_sim']
 
         # Drop embedding columns
         display_df = df.copy()
         display_df = display_df.drop(columns=["model_a_embedding", "model_b_embedding", "vibe_embedding"])
 
-        display_df["score_pos_model"] = [models for _ in range(len(df))] # hack: need this for training prediction models
-        # train_embedding_model(df, models, vibe, self.embedding_model, self.config)
-        display_df["vibe"] = vibe
-        return display_df, 0  
+        display_df["score_pos_model"] = [self.models for _ in range(len(df))] # hack: need this for training prediction models
+        # train_embedding_model(df, self.models, vibe, self.embedding_model, self.config)
+        return display_df 
     
     @staticmethod
     def plot_embedding_similarity(vibe: str, df: pd.DataFrame, models: List[str]) -> None:
@@ -407,13 +397,7 @@ def train_embedding_model(df: pd.DataFrame,
     df = df.copy()
     config["ranker"]["single_position_rank"] = False
     ranker = VibeRanker(config)
-    df, _ = ranker.score_single_vibe(vibe, df, models, single_position_rank=True)
-    
-    # Get embeddings
-    # if "model_a_embedding" not in df.columns:
-    #     df["model_a_embedding"] = get_llm_embedding(df[models[0]].tolist(), embedding_model)
-    # if "model_b_embedding" not in df.columns:
-    #     df["model_b_embedding"] = get_llm_embedding(df[models[1]].tolist(), embedding_model)
+    df = ranker.score_vibe([vibe], df)
     
     # Normalize embeddings
     df["model_a_embedding"] = df["model_a_embedding"].apply(lambda x: x / np.linalg.norm(x))
