@@ -310,6 +310,9 @@ def main(config):
 
     Args:
         config: OmegaConf configuration object containing all parameters
+        
+    Returns:
+        dict: Results of the analysis including plots and data
     """
     import wandb
     import os
@@ -317,11 +320,12 @@ def main(config):
 
     models = list(config.models)
     # Initialize wandb
-    wandb.init(
-        project=config.project_name,
-        name=f"{models[0]}_vs_{models[1]}",
-        save_code=True,
-    )
+    if config.wandb:
+        wandb.init(
+            project=config.project_name,
+            name=f"{models[0]}_vs_{models[1]}",
+            save_code=True,
+        )
 
     # Setup output directory
     output_dir = f"{config.output_dir}/{config.data_path.split('/')[-1].replace('.csv', '')}_{models[0]}_vs_{models[1]}"
@@ -346,12 +350,13 @@ def main(config):
     # set conversation_id to be the index of the question, models[0], models[1]
     df["conversation_id"] = df.index
     # Log dataset info
-    wandb.summary.update(
-        {
-            "preference_counts": df["preference"].value_counts().to_dict(),
-            "data_size": len(df),
-        }
-    )
+    if config.wandb:
+        wandb.summary.update(
+            {
+                "preference_counts": df["preference"].value_counts().to_dict(),
+                "data_size": len(df),
+            }
+        )
 
     df["model_a_embedding"] = get_llm_embedding(df[models[0]].tolist(), config.ranker.embedding_model)
     df["model_b_embedding"] = get_llm_embedding(df[models[1]].tolist(), config.ranker.embedding_model)
@@ -361,12 +366,13 @@ def main(config):
 
     # # Replace the existing embedding classifier code with:
     classifier_results = train_embedding_classifier(df)
-    wandb.log({
-        "model_id_embedding_classifier/train_accuracy": classifier_results["train_accuracy"],
-        "model_id_embedding_classifier/test_accuracy": classifier_results["test_accuracy"],
-        "model_id_embedding_classifier/train_ci": str(classifier_results["train_ci"]),
-        "model_id_embedding_classifier/test_ci": str(classifier_results["test_ci"])
-    })
+    if config.wandb:
+        wandb.log({
+            "model_id_embedding_classifier/train_accuracy": classifier_results["train_accuracy"],
+            "model_id_embedding_classifier/test_accuracy": classifier_results["test_accuracy"],
+            "model_id_embedding_classifier/train_ci": str(classifier_results["train_ci"]),
+            "model_id_embedding_classifier/test_ci": str(classifier_results["test_ci"])
+        })
 
     running_vibes = config.initial_vibes
     running_vibe_df = None  # all vibe scores for all iterations
@@ -379,7 +385,8 @@ def main(config):
         # 1. Propose vibes
         propose_results = vibe_discovery(proposer_df, config, output_dir, running_vibes)
         if config.proposer_only:
-            wandb.finish()
+            if config.wandb:
+                wandb.finish()
             return
         running_vibes.extend(list(propose_results["vibes"]))
 
@@ -412,25 +419,28 @@ def main(config):
         train_results = train_preference_prediction(
             ranking_df_iteration, config, output_dir, models
         )
-        wandb.log({"iteration": iteration, **train_results["metrics"]})
-        wandb.log({"vibes_each_iteration": wandb.Table(dataframe=pd.DataFrame(vibes_each_iteration))})
+        if config.wandb:
+            wandb.log({"iteration": iteration, **train_results["metrics"]})
+            wandb.log({"vibes_each_iteration": wandb.Table(dataframe=pd.DataFrame(vibes_each_iteration))})
         proposer_df = train_results["df_answers"].sort_values("preference_prediction", ascending=True)[:config["proposer"].num_samples]
 
     # 4. Get vibe question types (what types of questions result in high scores for a given vibe)
     vibe_question_types = get_vibe_question_types(rank_results["vibe_df"], config)
-    wandb.log(
-        {"Vibe Scoring/vibe_question_types": wandb.Table(dataframe=vibe_question_types)}
-    )
+    if config.wandb:
+        wandb.log(
+            {"Vibe Scoring/vibe_question_types": wandb.Table(dataframe=vibe_question_types)}
+        )
     vibe_question_types.to_csv(
         os.path.join(output_dir, "vibe_question_types.csv"), index=False
     )
 
-    wandb.log({"vibes_each_iteration": wandb.Table(dataframe=pd.DataFrame(vibes_each_iteration))})
-
-    # Add this line to get the wandb run URL
-    wandb_run_url = wandb.run.get_url()
-    wandb.finish()
-
+    if config.wandb:
+        wandb.log({"vibes_each_iteration": wandb.Table(dataframe=pd.DataFrame(vibes_each_iteration))})
+        # Add this line to get the wandb run URL
+        wandb_run_url = wandb.run.get_url()
+        wandb.finish()
+    else:
+        wandb_run_url = None
 
     # Optional: Launch Gradio app
     if config.gradio:
@@ -453,35 +463,42 @@ def main(config):
         "agg_df": rank_results["agg_df"],
         "corr_plot": train_results["corr_plot"],
         "wandb_run_url": wandb_run_url,
+        "df": df,  # Return the original dataframe for the webapp
+        "models": models,
     }
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", type=str, default="configs/base.yaml")
+    parser.add_argument("--webapp", action="store_true", help="Launch the web application")
     known_args, unknown_args = parser.parse_known_args()
 
-    # Load base config
-    base_config = OmegaConf.load("configs/base.yaml")
+    if known_args.webapp:
+        from webapp import run_webapp
+        run_webapp()
+    else:
+        # Load base config
+        base_config = OmegaConf.load("configs/base.yaml")
 
-    # If --config was passed in, load that as well
-    user_config = OmegaConf.load(known_args.config)
-    config = OmegaConf.merge(base_config, user_config)
+        # If --config was passed in, load that as well
+        user_config = OmegaConf.load(known_args.config)
+        config = OmegaConf.merge(base_config, user_config)
 
-    # Merge with any unknown key=value args from the command line
-    # e.g. python main.py data_path=something models=[foo,bar] ...
-    cli_config = OmegaConf.from_cli(unknown_args)
-    config = OmegaConf.merge(config, cli_config)
+        # Merge with any unknown key=value args from the command line
+        # e.g. python main.py data_path=something models=[foo,bar] ...
+        cli_config = OmegaConf.from_cli(unknown_args)
+        config = OmegaConf.merge(config, cli_config)
 
-    # Now config.* fields are populated from the base config, your custom config,
-    # and any command-line overrides.
-    if config.data_path is None:
-        raise ValueError("data_path must be specified.")
-    if config.models is None:
-        raise ValueError("models must be specified.")
+        # Now config.* fields are populated from the base config, your custom config,
+        # and any command-line overrides.
+        if config.data_path is None:
+            raise ValueError("data_path must be specified.")
+        if config.models is None:
+            raise ValueError("models must be specified.")
 
-    if not config.wandb:
-        os.environ["WANDB_MODE"] = "offline"
+        if not config.wandb:
+            os.environ["WANDB_MODE"] = "offline"
 
-    # Finally, run the main pipeline
-    main(config)
+        # Finally, run the main pipeline
+        main(config)

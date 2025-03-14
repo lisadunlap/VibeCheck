@@ -99,8 +99,92 @@ def run_multi_vibecheck(
 
     # Call the multi-model pipeline
     result = multi_model.main(base_config)
+    result["vibe_df"]["vibe"] = result["vibe_df"]["vibe"].str.apply(lambda x: "**" + x )
+    
+    # Save the results with a unique name based on models and file
+    if result and not base_config.test:  # Only save if not in test mode
+        save_results(result, models, os.path.basename(csv_file))
 
     return result
+
+# Function to save results
+def save_results(results, models, csv_filename):
+    """Save results to a pickle file with a name based on models and CSV filename."""
+    import pickle
+    import datetime
+    
+    # Create results directory if it doesn't exist
+    results_dir = os.path.join("saved_results")
+    os.makedirs(results_dir, exist_ok=True)
+    
+    # Create a timestamp
+    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    
+    # Create a filename based on models and CSV
+    model_str = "_vs_".join([m.replace(" ", "_") for m in models])
+    csv_base = os.path.splitext(csv_filename)[0]
+    filename = f"{model_str}_{csv_base}_{timestamp}.pkl"
+    
+    # Save the results
+    with open(os.path.join(results_dir, filename), "wb") as f:
+        pickle.dump(results, f)
+    
+    print(f"Results saved to {os.path.join(results_dir, filename)}")
+    return os.path.join(results_dir, filename)
+
+# Function to list available saved results
+def list_saved_results():
+    """List all saved result files in the saved_results directory."""
+    results_dir = os.path.join("saved_results")
+    if not os.path.exists(results_dir):
+        return []
+    
+    result_files = [f for f in os.listdir(results_dir) if f.endswith(".pkl")]
+    # Sort by modification time (newest first)
+    result_files.sort(key=lambda x: os.path.getmtime(os.path.join(results_dir, x)), reverse=True)
+    
+    # Format the filenames for display
+    formatted_results = []
+    for filename in result_files:
+        # Extract date from filename
+        parts = filename.split("_")
+        if len(parts) >= 2:
+            # Try to make the filename more readable
+            try:
+                # Assuming format is model1_vs_model2_dataset_YYYYMMDD_HHMMSS.pkl
+                models_part = "_".join(parts[:-2])  # Everything except timestamp
+                date_part = parts[-2]
+                time_part = parts[-1].replace(".pkl", "")
+                
+                # Format date for display
+                date_str = f"{date_part[:4]}-{date_part[4:6]}-{date_part[6:]}"
+                time_str = f"{time_part[:2]}:{time_part[2:4]}:{time_part[4:]}"
+                
+                display_name = f"{models_part} ({date_str} {time_str})"
+                formatted_results.append((display_name, filename))
+            except:
+                # If parsing fails, just use the filename
+                formatted_results.append((filename, filename))
+        else:
+            formatted_results.append((filename, filename))
+    
+    return formatted_results
+
+# Function to load saved results
+def load_saved_result(filename):
+    """Load a saved result file."""
+    import pickle
+    
+    results_dir = os.path.join("saved_results")
+    filepath = os.path.join(results_dir, filename)
+    
+    if not os.path.exists(filepath):
+        return None
+    
+    with open(filepath, "rb") as f:
+        results = pickle.load(f)
+    
+    return results
 
 # Update the file handler to show columns
 def on_file_upload(file):
@@ -153,13 +237,225 @@ def create_vibecheck_ui():
     }
     """
 
-    with gr.Blocks(css=custom_css) as demo:
+    with gr.Blocks(theme='davehornik/Tealy', css=custom_css) as demo:
         gr.HTML("""
         <div class="header-text">
             <h1><span class="header-emoji">✨</span> VibeCheck <span class="header-emoji">✨</span></h1>
             <p>Discover and analyze the vibes in your model outputs</p>
         </div>
         """)
+
+        ################################################################
+        # LOAD PREVIOUS RESULTS TAB
+        ################################################################
+        with gr.Tab("Load Previous Results"):
+            gr.HTML("""
+            <div class="tab-content">
+                <h3>Load Previous Analysis Results</h3>
+                <p>Select a previously saved analysis to view its results without having to rerun the pipeline.</p>
+            </div>
+            """)
+            
+            with gr.Row():
+                # Left Column - Selection
+                with gr.Column(scale=1):
+                    # Dropdown to select saved results
+                    saved_results_dropdown = gr.Dropdown(
+                        label="Select a saved analysis",
+                        choices=list_saved_results(),
+                        interactive=True,
+                        allow_custom_value=False,
+                    )
+                    
+                    # Refresh button
+                    refresh_btn = gr.Button("Refresh List", variant="secondary")
+                    
+                    # Load button
+                    load_btn = gr.Button("Load Selected Results", variant="primary")
+                    
+                    # Status message
+                    load_status = gr.Markdown()
+                
+            # Output area - similar to multi-model tab
+            with gr.Row():
+                load_output_md = gr.Markdown()
+            
+            with gr.Row():
+                with gr.Column():
+                    gr.Markdown("### Vibe Score Distribution")
+                    load_output_plot1 = gr.Plot()
+                
+            with gr.Row():
+                with gr.Column():
+                    gr.Markdown("### Model Vibe Scores")
+                    load_output_plot2 = gr.Plot()
+
+            # Bottom Row - Vibe Examples
+            with gr.Row():
+                with gr.Column():
+                    gr.Markdown("### Explore Vibe Examples")
+                    load_vibe_dropdown = gr.Dropdown(
+                        label="Select a vibe to see examples",
+                        choices=[],
+                        interactive=True,
+                        multiselect=False,
+                        value=None,
+                        allow_custom_value=False,
+                    )
+                    load_examples_md = gr.Markdown()
+                    
+                    # Remove dataframe display
+                    # gr.Markdown("### Data Table")
+                    # load_dataframe = gr.Dataframe(interactive=False)
+            
+            # Store loaded results state
+            load_results_state = gr.State()
+            
+            # Function to refresh the list of saved results
+            def refresh_saved_results():
+                return gr.Dropdown(choices=list_saved_results())
+            
+            refresh_btn.click(
+                fn=refresh_saved_results,
+                inputs=[],
+                outputs=[saved_results_dropdown]
+            )
+            
+            # Function to load selected results
+            def on_load_results(selected_result):
+                if not selected_result:
+                    return "Please select a saved analysis to load.", None
+                
+                # Get the actual filename from the display name
+                filename = selected_result[1] if isinstance(selected_result, tuple) else selected_result
+                
+                # Load the results
+                results = load_saved_result(filename)
+                
+                if not results or "vibe_df" not in results:
+                    return "Failed to load results or invalid result file.", None
+                
+                # Extract model names from the filename
+                model_names = []
+                try:
+                    parts = filename.split("_")
+                    if "vs" in parts:
+                        vs_index = parts.index("vs")
+                        model_names = [parts[vs_index-1], parts[vs_index+1]]
+                except:
+                    model_names = ["Model A", "Model B"]  # Default if parsing fails
+                
+                # Summarize
+                summary_text = (
+                    "## Loaded VibeCheck Results\n"
+                    + f"Output directory: {results.get('output_dir', 'N/A')}\n\n"
+                    + f"Wandb Run URL: {results.get('wandb_run_url', 'N/A')}\n\n"
+                    + f"**Found {len(results['vibe_df']['vibe'].unique())} vibe(s)**\n"
+                    + "\n".join(
+                        [
+                            f"- **{vibe}"
+                            for vibe in results["vibe_df"]["vibe"].unique().tolist()
+                        ]
+                    )
+                    + "\n### See Examples Below"
+                )
+                
+                return (
+                    "Results loaded successfully!",
+                    summary_text,
+                    results["model_vibe_scores_plot"],
+                    results["score_dist_plot"],
+                    results,
+                )
+            
+            load_btn.click(
+                fn=on_load_results,
+                inputs=[saved_results_dropdown],
+                outputs=[
+                    load_status,
+                    load_output_md,
+                    load_output_plot1,
+                    load_output_plot2,
+                    load_results_state,
+                ],
+            )
+            
+            # Update vibe dropdown when results change
+            def update_load_vibe_dropdown(results_dict):
+                if not results_dict or "vibe_df" not in results_dict:
+                    return gr.Dropdown(choices=[], interactive=True)
+                
+                choices = sorted(results_dict["vibe_df"]["vibe"].unique().tolist())
+                return gr.Dropdown(choices=choices, interactive=True)
+            
+            load_results_state.change(
+                fn=update_load_vibe_dropdown,
+                inputs=[load_results_state],
+                outputs=[load_vibe_dropdown],
+            )
+            
+            # Show examples for selected vibe
+            def show_load_examples(selected_vibe, results_dict):
+                if not selected_vibe:
+                    return "Please select a vibe to see examples."
+                
+                if not results_dict or "vibe_df" not in results_dict:
+                    return "No vibe data available."
+                
+                vibe_df = results_dict["vibe_df"]
+                vibe_question_types = results_dict.get("vibe_question_types", None)
+                
+                # Extract model names from the dataframe
+                model_columns = [col for col in vibe_df.columns if col not in ["question", "vibe", "score", "ranker_output", "preference"]]
+                if len(model_columns) < 2:
+                    model_columns = ["Model A", "Model B"]  # Default if can't determine
+                
+                # Filter for the selected vibe
+                subset = vibe_df[
+                    (vibe_df["vibe"] == selected_vibe) & (vibe_df["score"].abs() > 0.0)
+                ].head(5)
+                
+                # If we have vibe_question_types, let's locate any relevant text
+                vibe_explanation = ""
+                if vibe_question_types is not None:
+                    merged = vibe_df.merge(vibe_question_types, on="vibe", how="left")
+                    part = merged[merged["vibe"] == selected_vibe]
+                    if len(part) > 0:
+                        vibe_explanation = part["vibe_question_types"].values[0]
+                
+                md = f"### Questions which exhibit the vibe"
+                if vibe_explanation:
+                    md += "\n\n" + vibe_explanation
+                md += "\n---\n"
+                
+                for i, row in enumerate(subset.itertuples(), 1):
+                    row = row._asdict()
+                    md += f"#### Example {i}\n"
+                    md += f"**Prompt:** {row['question']}\n\n"
+                    
+                    # Show both model outputs if available
+                    for model in model_columns:
+                        if model in row:
+                            md += f"**{model} Output:**\n{row[model]}\n\n"
+                    
+                    md += f"**Score:** {row['score']:.3f} "
+                    
+                    # Add interpretation of which model exhibits the vibe more
+                    if len(model_columns) >= 2:
+                        if row["score"] > 0:
+                            md += f"({model_columns[0]} exhibits this vibe more)\n\n"
+                        else:
+                            md += f"({model_columns[1]} exhibits this vibe more)\n\n"
+                    
+                    md += "---\n\n"
+                
+                return md
+            
+            load_vibe_dropdown.change(
+                fn=show_load_examples,
+                inputs=[load_vibe_dropdown, load_results_state],
+                outputs=[load_examples_md],
+            )
 
         ################################################################
         # MULTI MODEL TAB
@@ -197,14 +493,15 @@ def create_vibecheck_ui():
                         value=False
                     )
 
+                with gr.Column(scale=1):
                     # Add accordion for advanced parameters
-                    with gr.Accordion("Advanced Parameters", open=False):
+                    with gr.Accordion("Advanced Parameters", open=True):
                         # Load the base config to get default values
                         base_config = OmegaConf.load("configs/base.yaml")
                         config_inputs = {}
                         
                         # General Settings
-                        with gr.Accordion("General Settings", open=True):
+                        with gr.Accordion("General Settings", open=False):
                             config_inputs["project_name"] = gr.Textbox(
                                 label="Project Name",
                                 value=base_config.project_name,
@@ -382,17 +679,19 @@ def create_vibecheck_ui():
                         
                     run_multi_btn = gr.Button("✨ Run VibeCheck ✨", variant="primary", size="lg")
 
-                with gr.Column():
-                    multi_output_md = gr.Markdown()
+            with gr.Row():
+                multi_output_md = gr.Markdown()
 
             # Right Column - Plots
             with gr.Row():
-                gr.Markdown("### Vibe Score Distribution")
-                multi_output_plot1 = gr.Plot()
+                with gr.Column():
+                    gr.Markdown("### Vibe Score Distribution")
+                    multi_output_plot1 = gr.Plot()
                 
             with gr.Row():
-                gr.Markdown("### Model Vibe Scores")
-                multi_output_plot2 = gr.Plot()
+                with gr.Column():
+                    gr.Markdown("### Model Vibe Scores")
+                    multi_output_plot2 = gr.Plot()
 
             # Bottom Row - Vibe Examples
             with gr.Row():
@@ -407,6 +706,10 @@ def create_vibecheck_ui():
                         allow_custom_value=False,
                     )
                     multi_examples_md = gr.Markdown()
+                    
+                    # Remove dataframe display
+                    # gr.Markdown("### Data Table")
+                    # multi_dataframe = gr.Dataframe(interactive=False)
 
             # Store results state
             multi_results_state = gr.State()
@@ -453,13 +756,13 @@ def create_vibecheck_ui():
 
                 # Summarize
                 summary_text = (
-                    "## Multi-Model VibeCheck Results\n"
+                    "## VibeCheck Results\n"
                     + f"Output directory: {results['output_dir']}\n\n"
                     + f"Wandb Run URL: {results['wandb_run_url']}\n\n"
                     + f"**Found {len(results['vibe_df']['vibe'].unique())} vibe(s)**\n"
                     + "\n".join(
                         [
-                            f"- {vibe}"
+                            f"- **{vibe}"
                             for vibe in results["vibe_df"]["vibe"].unique().tolist()
                         ]
                     )
@@ -540,9 +843,9 @@ def create_vibecheck_ui():
                     if len(part) > 0:
                         vibe_explanation = part["vibe_question_types"].values[0]
 
-                md = f"### Questions which exhibit the vibe: {selected_vibe}\n\n"
+                md = f"### Questions which exhibit the vibe"
                 if vibe_explanation:
-                    md += f"Question types for this vibe:\n\n{vibe_explanation}\n\n"
+                    md += vibe_explanation
                 md += "---\n\n"
 
                 for i, row in enumerate(subset.itertuples(), 1):
@@ -666,6 +969,10 @@ def create_vibecheck_ui():
                         allow_custom_value=False,
                     )
                     examples_md = gr.Markdown()
+                    
+                    # Remove dataframe display
+                    # gr.Markdown("### Data Table")
+                    # single_dataframe = gr.Dataframe(interactive=False)
 
             # Store results state
             single_results_state = gr.State()
@@ -718,7 +1025,7 @@ def create_vibecheck_ui():
                     f"- Found {len(results['vibe_df']['vibe'].unique())} vibe(s)\n"
                     + "\n".join(
                         [
-                            f"- {vibe}"
+                            f"- **{vibe}"
                             for vibe in results["vibe_df"]["vibe"].unique().tolist()
                         ]
                     )
