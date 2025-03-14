@@ -1,0 +1,51 @@
+project: VibeCheck-Caption
+wandb: False # Set to True to log to Weights and Biases
+dummy_eval: False
+num_samples: False
+num_eval_samples: False
+output_name: final_eval
+oz: False
+group_column: False
+test: False
+save_dir: pipeline_results
+# data_path: data/benchmark/arena_data.csv
+data_path: data/captions/gpt_gemini_captions_train.csv
+test_data_path: data/captions/gpt_gemini_captions_test.csv
+k: 3
+num_eval: 10
+batch_size: 50
+num_axes_generated: 20
+embedding_model: text-embedding-3-small
+seed: 42
+cluster_method: hierarchical 
+ranker: RelativeRanker
+sampler: Sampler
+reducer: AxisReducer
+proposer: LLMProposerFixed
+num_topic_clusters: 5
+proposer_batch_size: 5
+proposer_prompt: proposer_prompt_freeform_vlm
+# judges: [gpt-3.5-turbo, llama-3-70b]
+judges: [gpt-4o-mini, gpt-3.5-turbo]
+models: [gemini_caption, gpt_caption]
+eval_only: True
+new_sample: True
+num_proposal_samples: 30
+new_prompt: True
+max_iterations: 3
+axes: [
+    "Narrative Flow: High: Structured as a dynamic story. Low: Disjointed with basic descriptions.",
+    "Descriptive Language: High: Uses vivid, poetic language. Low: Uses straightforward, factual language.",
+    "Setting Emphasis: High: Vividly paints the setting. Low: Functional setting description.",
+    "Characterization: High: Infers personality and emotions. Low: Describes physically and factually.",
+    "Contextual Elements: High: Includes broader setting and inferred context. Low: Focuses only on immediate scene.",
+    "Imagery and Metaphors: High: Uses vivid imagery and metaphors. Low: Uses literal descriptions.",
+    "Detail Level: High: Detailed descriptions with nuances. Low: Straightforward descriptions with minimal detail.",
+    "Precision: High: Provides specific and exact details. Low: Generalizes without exact specifics.",
+    "Atmospheric Description: High: Evokes mood and ambiance. Low: Functional and straightforward.",
+    "Emotion and Tone: High: Emotional and atmospheric. Low: Neutral and clinical."
+]
+
+# models
+rubric_generation_model: "gpt-4o"
+proposer_model: "gpt-4o"

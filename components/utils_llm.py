@@ -37,7 +37,7 @@ def get_llm_output(
 ) -> str | List[str]:
     # Handle list of prompts with thread pool
     if isinstance(prompt, list):
-        with concurrent.futures.ThreadPoolExecutor(max_workers=32) as executor:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=16) as executor:
             futures = [
                 executor.submit(
                     get_llm_output, p, model, cache, system_prompt, history, max_tokens
@@ -171,12 +171,13 @@ def get_llm_output(
     return "LLM Error: Cannot get response."
 
 
-def get_llm_embedding(prompt: str | List[str], model: str) -> str | List[str]:
+from components.utils_text_embedding import get_text_embedding
+def get_llm_embedding(prompt: str | List[str], model: str, instruction: str = "", cache=False) -> str | List[str]:
     # Handle list of prompts with thread pool
     if isinstance(prompt, list):
-        with concurrent.futures.ThreadPoolExecutor(max_workers=32) as executor:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=16) as executor:
             futures = [
-                executor.submit(get_llm_embedding, p, model)
+                executor.submit(get_llm_embedding, p, model, instruction, cache)
                 for p in prompt
             ]
             return [f.result() for f in tqdm(concurrent.futures.as_completed(futures), total=len(futures))]
@@ -184,24 +185,33 @@ def get_llm_embedding(prompt: str | List[str], model: str) -> str | List[str]:
     # Original single prompt logic
     openai.api_base = "https://api.openai.com/v1"
     client = OpenAI()
-    key = json.dumps([model, prompt])
+    if len(instruction) > 0:
+        key = json.dumps([model, prompt, instruction])
+    else:
+        key = json.dumps([model, prompt])
 
-    cached_value = get_emb_from_cache(key, llm_embed_cache)
+    cached_value = get_emb_from_cache(key, llm_embed_cache) if cache else None
 
     if cached_value is not None:
-        logging.debug(f"LLM Cache Hit")
+        logging.debug(f"LLM Embedding Cache Hit")
         return cached_value
     else:
-        logging.debug(f"LLM Cache Miss")
+        logging.debug(f"LLM Embedding Cache Miss")
 
+    # Fallback to original method if server fails or model is not NVEmbedV2
     for _ in range(3):
         try:
-            text = prompt.replace("\n", " ")
-            embedding = (
-                client.embeddings.create(input=[text], model=model).data[0].embedding
-            )
+            # Use the Flask embedding server if the model is NVEmbedV2
+            if model == "nvidia/NV-Embed-v2":
+                print(f"Getting embeddings for {prompt} from embedding server")
+                embedding = get_text_embedding([prompt], instruction, server_url="http://localhost:5000")[0]
+            else:
+                text = prompt.replace("\n", " ")
+                embedding = (
+                    client.embeddings.create(input=[text], model=model).data[0].embedding
+                )
             save_emb_to_cache(key, embedding, llm_embed_cache)
-            
+            embedding = embedding / np.linalg.norm(embedding)
             return embedding
         except Exception as e:
             logging.error(f"LLM Error: {e}")
@@ -222,6 +232,38 @@ def test_get_llm_output():
     completion = get_llm_output(prompt, model)
     print(f"{model=}, {completion=}")
 
+def test_get_llm_embedding():
+    prompt = "hello"
+    model = "nvidia/NV-Embed-v2"
+    embedding = get_llm_embedding(prompt, model, instruction="", cache=False)
+    print(f"{model=}, {np.array(embedding).shape}")
+    # normalize the embedding
+    embedding = embedding / np.linalg.norm(embedding)
+    # test the embedding server# ensure the embedding is correct (see if the embedding is close to the original prompt but far from other prompts)
+    prompt2 = "hello"
+    far_prompt = "what is the capital of the moon?"
+    embedding2 = get_llm_embedding(prompt2, model, cache=False)
+    embedding2 = embedding2 / np.linalg.norm(embedding2)
+    print(f"{model=}, {np.array(embedding2).shape}")
+    print(f"cosine similarity (should be close to 1): {np.dot(embedding, embedding2) / (np.linalg.norm(embedding) * np.linalg.norm(embedding2))}")
+    far_embedding = get_llm_embedding(far_prompt, model, cache=False)
+    far_embedding = far_embedding / np.linalg.norm(far_embedding)
+    print(f"cosine similarity: {np.dot(embedding, far_embedding) / (np.linalg.norm(embedding) * np.linalg.norm(far_embedding))}")
+    model = "text-embedding-3-small"
+    embedding = get_llm_embedding(prompt, model, cache=False)
+    print(f"{model=}, {np.array(embedding).shape}")
+
+    # ensure the embedding is correct (see if the embedding is close to the original prompt but far from other prompts)
+    prompt2 = "hello"
+    far_prompt = "what is the capital of the moon?"
+    embedding2 = get_llm_embedding(prompt2, model, cache=False)
+    embedding2 = embedding2 / np.linalg.norm(embedding2)
+    print(f"{model=}, {np.array(embedding2).shape}")
+    print(f"cosine similarity (should be close to 1): {np.dot(embedding, embedding2) / (np.linalg.norm(embedding) * np.linalg.norm(embedding2))}")
+    far_embedding = get_llm_embedding(far_prompt, model, cache=False)
+    far_embedding = far_embedding / np.linalg.norm(far_embedding)
+    print(f"cosine similarity: {np.dot(embedding, far_embedding) / (np.linalg.norm(embedding) * np.linalg.norm(far_embedding))}")
 
 if __name__ == "__main__":
-    test_get_llm_output()
+    # test_get_llm_output()
+    test_get_llm_embedding()

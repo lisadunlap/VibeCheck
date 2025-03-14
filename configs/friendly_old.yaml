@@ -4,7 +4,6 @@ data_path: "data/friendly_and_cold_sample.csv"  # Required argument
 # List of two model names to compare. These should match the column names in the CSV.
 models: ["friendly", "cold"]      # Required argument
 
-
 num_samples: null 
 
 wandb: true # If true, logs results to Weights & Biases.
@@ -40,14 +39,19 @@ proposer:
   model: "gpt-4o"
   shuffle_positions: false # If true, shuffles the positions of the models in the prompt for finding vibes. This is best when you are using the axis proposal method.
   batch_size: 5 # Number of samples to use for each batch (LLM call) in the vibe proposal.
+  prompt: proposer_freeform_axis
+  iteration_prompt: proposer_freeform_iteration_axis
+  reduction_prompt: reduce_freeform_axis_longer
+
 
 ranker: 
   single_position_rank: false # If true, only ranks model outputs in one position order. This is faster but may introduce position bias in the analysis.
   model: "gpt-4o-mini"
   solver: "elasticnet" # Solver to use for regression analysis (choices: standard, lasso, elasticnet)
   embedding_model: "text-embedding-3-small" # Model to use for embedding analysis.
-  embedding_rank: true # If true, ranks model outputs using embedding similarity. This is much cheaper than the LLM ranker, but way less accurate.
-  vibe_batch_size: 5 # Number of samples to use for each batch (LLM call) in the vibe ranking. The higher the batch, that faster/cheaper the vibe ranking, but less accurate.
+  embedding_rank: false # If true, ranks model outputs using embedding similarity. This is much cheaper than the LLM ranker, but way less accurate.
+  vibe_batch_size: 5 # Number of samples to use for each batch (LLM call) in the vibe ranking.
+  prompt: ranker_prompt_axis_multi
 
 filter:
   min_score_diff: 0.05 # Minimum score difference to consider a vibe.

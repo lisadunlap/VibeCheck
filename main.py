@@ -4,11 +4,7 @@ import pandas as pd
 from plotly import graph_objects as go
 import numpy as np
 import os
-import lotus
-from lotus.models import LM, SentenceTransformersRM
-from lotus.cache import CacheConfig, CacheType, CacheFactory
 from omegaconf import OmegaConf
-from lotus.cache import Cache
 
 from typing import List
 
@@ -16,7 +12,7 @@ from utils import (
     create_gradio_app,
     train_embedding_classifier,
 )
-from components.utils_llm import get_llm_embedding
+from components.utils_llm import get_llm_embedding, get_llm_output
 
 import torch
 import torch.nn as nn
@@ -38,7 +34,7 @@ def timeit(func):
         return result
     return wrapper
 
-def get_vibe_question_types(vibe_df: pd.DataFrame, batch_size: int = 50):
+def get_vibe_question_types(vibe_df: pd.DataFrame, config: OmegaConf, batch_size: int = 50):
     """Describe what types of questions result in high scores for a given vibe."""
 
     filtered_vibe_df = vibe_df[vibe_df["score"].abs() > 0.0].copy()
@@ -69,10 +65,11 @@ Question types which do not exhibit the behavior: <description>
         new_df.append({"vibe": vibe, "input_text": input_text})
 
     new_df = pd.DataFrame(new_df)
-    vibe_question_types = new_df.sem_map(
-        prompt, return_raw_outputs=True, suffix="vibe_question_types"
+    new_df["vibe_question_types"] = new_df.apply(
+        lambda row: get_llm_output(prompt.format(input_text=row["input_text"]), config.proposer.model),
+        axis=1,
     )
-    return vibe_question_types
+    return new_df
 
 
 @timeit
@@ -126,7 +123,7 @@ def vibe_validation(
     vibes: List[str], 
     df: pd.DataFrame, 
     config: OmegaConf, 
-    cache: Cache, 
+    # cache: Cache, 
     output_dir: str,
 ):
     """
@@ -141,20 +138,18 @@ def vibe_validation(
     )
     from components.rank import VibeRankerEmbedding, VibeRanker
 
-    # Change model for ranking
-    lm = LM(model=config.ranker.model, cache=cache)
-    lotus.settings.configure(lm=lm, enable_cache=True)
     models = list(config.models)
 
     # Rank vibes (list of strings)
     vibes_to_rank = vibes[:3] if config.test else vibes
 
-    if config.ranker.embedding_rank:    
+    if config.ranker.embedding_rank:
+        print("Using embedding ranker")
         vibe_ranker = VibeRankerEmbedding(config)
         vibe_df = vibe_ranker.score(
             vibes_to_rank,
             df,
-            single_position_rank=config.ranker.single_position_rank,
+            single_position_rank=True,
         )
     else:
         vibe_ranker = VibeRanker(config)
@@ -227,7 +222,6 @@ def train_preference_prediction(
         dict: Contains models, plots, and analysis results
     """
     from utils import (
-        get_feature_df,
         train_and_evaluate_model,
         create_side_by_side_plot,
         create_vibe_correlation_plot,
@@ -319,9 +313,6 @@ def main(config):
     """
     import wandb
     import os
-    import lotus
-    from lotus.models import LM, SentenceTransformersRM
-    from lotus.cache import CacheConfig, CacheType, CacheFactory
     import pandas as pd
 
     models = list(config.models)
@@ -335,13 +326,6 @@ def main(config):
     # Setup output directory
     output_dir = f"{config.output_dir}/{config.data_path.split('/')[-1].replace('.csv', '')}_{models[0]}_vs_{models[1]}"
     os.makedirs(output_dir, exist_ok=True)
-
-    # Initialize LOTUS
-    cache_config = CacheConfig(cache_type=CacheType.SQLITE, max_size=1000)
-    cache = CacheFactory.create_cache(cache_config)
-    lm = LM(model=config.proposer.model, cache=cache)
-    rm = SentenceTransformersRM(model="intfloat/e5-base-v2")
-    lotus.settings.configure(lm=lm, rm=rm, enable_cache=True)
 
     # Load and preprocess data
     df = pd.read_csv(config.data_path)
@@ -401,7 +385,7 @@ def main(config):
 
         # 2. Rank vibes
         rank_results = vibe_validation(
-            running_vibes, df, config, cache, output_dir
+            running_vibes, df, config, output_dir
         )
         rank_results["vibe_df"]["iteration"] = iteration
         if running_vibe_df is None:
@@ -433,7 +417,7 @@ def main(config):
         proposer_df = train_results["df_answers"].sort_values("preference_prediction", ascending=True)[:config["proposer"].num_samples]
 
     # 4. Get vibe question types (what types of questions result in high scores for a given vibe)
-    vibe_question_types = get_vibe_question_types(rank_results["vibe_df"])
+    vibe_question_types = get_vibe_question_types(rank_results["vibe_df"], config)
     wandb.log(
         {"Vibe Scoring/vibe_question_types": wandb.Table(dataframe=vibe_question_types)}
     )
