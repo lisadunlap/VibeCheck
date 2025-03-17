@@ -1,10 +1,9 @@
 import pandas as pd
 from typing import List, Tuple
 import wandb
-import litellm
 import numpy as np
 
-from components.utils_llm import get_llm_output, get_llm_embedding
+from components.utils_llm import get_llm_output
 import components.prompts.reduction_prompts as reduction_prompts
 import components.prompts.proposer_prompts as proposer_prompts
 
@@ -14,21 +13,9 @@ def parse_bullets(text: str):
     bullets = []
     for line in lines:
         if line.strip().startswith("-") or line.strip().startswith("*"):
-            bullets.append(line.strip().lstrip("- *").strip())
+            # oply remove the first * if
+            bullets.append(line.replace("* ", "").replace("- ", "").strip())
     return bullets
-
-def parse_axes(text: str):
-    """
-    Parse axes from text.
-    """
-    lines = [line.strip() for line in text.split("\n") if line.strip()]
-    axes = []
-    for line in lines:
-        cleaned = line.strip('1234567890. -"')
-        cleaned = cleaned.replace("**", "")
-        if cleaned:
-            axes.append(cleaned)
-    return axes
 
 class VibeProposerBase:
     """
@@ -79,11 +66,7 @@ class VibeProposer(VibeProposerBase):
             current_vibes (List[str]): Existing vibe axes.
             num_vibes (int): Number of vibes to return.
             **kwargs: Override any config values from proposer section (args can be found in 'configs/base.yaml')
-
-        Returns:
-            List[str]
         """
-        # update config keys with kwargs
         for key, value in kwargs.items():
             setattr(self.config, key, value)
 
@@ -162,5 +145,6 @@ class VibeProposer(VibeProposerBase):
         )
 
         vibes = parse_bullets(summaries)
+        vibes = [vibe.replace("*", "") for vibe in vibes]
         print(f"Number of total differences after reduction: {len(vibes)}")
         return vibes[:num_vibes]

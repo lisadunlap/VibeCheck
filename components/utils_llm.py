@@ -31,11 +31,11 @@ if not os.path.exists("cache/llm_embed_cache"):
 llm_cache = lmdb.open("cache/llm_cache", map_size=int(1e11))
 llm_embed_cache = lmdb.open("cache/llm_embed_cache", map_size=int(1e11))
 
+cache_lock = threading.Lock()
 
 def get_llm_output(
     prompt: str | List[str], model: str, cache=True, system_prompt=None, history=[], max_tokens=256
 ) -> str | List[str]:
-    # Handle list of prompts with thread pool
     if isinstance(prompt, list):
         with concurrent.futures.ThreadPoolExecutor(max_workers=16) as executor:
             futures = [
@@ -44,9 +44,9 @@ def get_llm_output(
                 )
                 for p in prompt
             ]
-            return [f.result() for f in tqdm(concurrent.futures.as_completed(futures), total=len(futures))]
+            concurrent.futures.wait(futures)
+            return [future.result() for future in futures]
 
-    # Original single prompt logic
     openai.api_base = (
         "https://api.openai.com/v1" if model != "llama-3-8b" else "http://localhost:8001/v1"
     )
@@ -76,7 +76,6 @@ def get_llm_output(
             {"role": "user", "content": prompt},
         ]
     else:
-        # messages = prompt
         messages = (
             [{"role": "system", "content": systems_prompt}]
             + history
@@ -86,7 +85,9 @@ def get_llm_output(
         )
     key = json.dumps([model, messages])
 
-    cached_value = get_from_cache(key, llm_cache) if cache else None
+    with cache_lock:
+        cached_value = get_from_cache(key, llm_cache) if cache else None
+
     if cached_value is not None:
         logging.debug(f"LLM Cache Hit")
         return cached_value
@@ -104,7 +105,7 @@ def get_llm_output(
                 )
                 end_time_ms = round(
                     datetime.datetime.now().timestamp() * 1000
-                )  # logged in milliseconds
+                )
                 response = completion.choices[0].message.content.strip()
             elif "gpt-4" in model:
                 start_time_ms = datetime.datetime.now().timestamp() * 1000
@@ -114,7 +115,7 @@ def get_llm_output(
                 )
                 end_time_ms = round(
                     datetime.datetime.now().timestamp() * 1000
-                )  # logged in milliseconds
+                )
                 response = completion.choices[0].message.content.strip()
             elif "claude-opus" in model:
                 completion = client.messages.create(
@@ -136,7 +137,7 @@ def get_llm_output(
                     model="lmsys/vicuna-7b-v1.5",
                     prompt=prompt,
                     max_tokens=max_tokens,
-                    temperature=0.7,  # TODO: greedy may not be optimal
+                    temperature=0.7,
                 )
                 response = completion.choices[0].message.content.strip()
             elif model == "llama-3-8b":
@@ -152,12 +153,13 @@ def get_llm_output(
                     .replace("<|eot_id|>", "")
                 )
 
-            save_to_cache(key, response, llm_cache)
+            with cache_lock:
+                save_to_cache(key, response, llm_cache)
+
             return response
 
         except Exception as e:
             logging.error(f"LLM Error: {e}")
-            # if error is Error Code: 400, then it is likely that the prompt is too long, so truncate it
             if "Error code: 400" in str(e):
                 messages = (
                     [{"role": "system", "content": systems_prompt}]
@@ -172,17 +174,16 @@ def get_llm_output(
 
 
 from components.utils_text_embedding import get_text_embedding
-def get_llm_embedding(prompt: str | List[str], model: str, instruction: str = "", cache=False) -> str | List[str]:
-    # Handle list of prompts with thread pool
+def get_llm_embedding(prompt: str | List[str], model: str, instruction: str = "", cache=True) -> str | List[str]:
     if isinstance(prompt, list):
         with concurrent.futures.ThreadPoolExecutor(max_workers=16) as executor:
             futures = [
                 executor.submit(get_llm_embedding, p, model, instruction, cache)
                 for p in prompt
             ]
-            return [f.result() for f in tqdm(concurrent.futures.as_completed(futures), total=len(futures))]
+            concurrent.futures.wait(futures)
+            return [future.result() for future in futures]
 
-    # Original single prompt logic
     openai.api_base = "https://api.openai.com/v1"
     client = OpenAI()
     if len(instruction) > 0:
@@ -190,7 +191,8 @@ def get_llm_embedding(prompt: str | List[str], model: str, instruction: str = ""
     else:
         key = json.dumps([model, prompt])
 
-    cached_value = get_emb_from_cache(key, llm_embed_cache) if cache else None
+    with cache_lock:
+        cached_value = get_emb_from_cache(key, llm_embed_cache) if cache else None
 
     if cached_value is not None:
         logging.debug(f"LLM Embedding Cache Hit")
@@ -198,19 +200,21 @@ def get_llm_embedding(prompt: str | List[str], model: str, instruction: str = ""
     else:
         logging.debug(f"LLM Embedding Cache Miss")
 
-    # Fallback to original method if server fails or model is not NVEmbedV2
     for _ in range(3):
         try:
-            # Use the Flask embedding server if the model is NVEmbedV2
             if model == "nvidia/NV-Embed-v2":
                 print(f"Getting embeddings for {prompt} from embedding server")
                 embedding = get_text_embedding([prompt], instruction, server_url="http://localhost:5000")[0]
             else:
+                print(f"getting emb for {prompt}")
                 text = prompt.replace("\n", " ")
                 embedding = (
                     client.embeddings.create(input=[text], model=model).data[0].embedding
                 )
-            save_emb_to_cache(key, embedding, llm_embed_cache)
+            
+            with cache_lock:
+                save_emb_to_cache(key, embedding, llm_embed_cache)
+                
             embedding = embedding / np.linalg.norm(embedding)
             return embedding
         except Exception as e:
@@ -237,9 +241,7 @@ def test_get_llm_embedding():
     model = "nvidia/NV-Embed-v2"
     embedding = get_llm_embedding(prompt, model, instruction="", cache=False)
     print(f"{model=}, {np.array(embedding).shape}")
-    # normalize the embedding
     embedding = embedding / np.linalg.norm(embedding)
-    # test the embedding server# ensure the embedding is correct (see if the embedding is close to the original prompt but far from other prompts)
     prompt2 = "hello"
     far_prompt = "what is the capital of the moon?"
     embedding2 = get_llm_embedding(prompt2, model, cache=False)
@@ -253,7 +255,6 @@ def test_get_llm_embedding():
     embedding = get_llm_embedding(prompt, model, cache=False)
     print(f"{model=}, {np.array(embedding).shape}")
 
-    # ensure the embedding is correct (see if the embedding is close to the original prompt but far from other prompts)
     prompt2 = "hello"
     far_prompt = "what is the capital of the moon?"
     embedding2 = get_llm_embedding(prompt2, model, cache=False)

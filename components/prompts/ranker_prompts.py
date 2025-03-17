@@ -27,7 +27,7 @@ Your sole focus is to determine which response better aligns with each property,
 Instructions: For each property,
 	•	If Response A aligns with the property more than Response B, respond with "A".
   •	If Response B aligns with the property more than Response A, respond with "B".
-	•	If the responses are roughly equal on the property, respond with "equal".
+	•	If the responses are roughly equal on the property or neither response contains the property, respond with "equal". 
 	•	If the property does not apply to these outputs (e.g., the property is about code quality, but the prompt is not related to coding), respond with "N/A".
 	•	If you are unsure about the meaning of the property, respond with "unsure". Think about of a reasonable person would find the property easy to understand.
 
@@ -55,7 +55,7 @@ When comparing the outputs, consider the following:
 Instructions:
 	•	If Response A aligns with the 'high' description more than Response B, respond with "A".
 	•	If Response B aligns with the 'high' description more than Response A, respond with "B".
-	•	If the responses are roughly equal on the axis, respond with "equal".
+	•	If the responses are roughly equal on the axis, respond with "equal". Use this sparingly, most of the time you should respond with "A" or "B".
 	•	If the axis does not apply to these outputs (e.g., the axis is about code quality, but the prompt is not related to coding), respond with "N/A".
 	•	If you are unsure about the meaning of the axis, respond with "unsure".
 
@@ -74,7 +74,7 @@ ranker_prompt_axis_multi = """You are a fair and unbiased judge. Your task is to
 Instructions: For each property,
 	•	If Response A aligns with the 'high' description more than Response B, respond with "A".
   •	If Response B aligns with the 'high' description more than Response A, respond with "B".
-	•	If the responses are roughly equal on the property, respond with "equal".
+	•	If the responses are roughly equal on the property, respond with "equal". Use this sparingly, most of the time you should respond with "A" or "B".
 	•	If the property does not apply to these outputs (e.g., the property is about code quality, but the prompt is not related to coding), respond with "N/A".
 	•	If you are unsure about the meaning of the property, respond with "unsure".
 
@@ -93,3 +93,15 @@ Here are the properties and the two responses:
 {inputs}
 
 Remember to be as objective as possible and strictly adhere to the response format."""
+
+
+judge_prompt = """You are an impartial judge and evaluate the quality of the responses provided by two AI assistants (A and B) to the user question displayed below. You should choose the assistant that follows the user’s instructions and answers the user’s question better. Your evaluation should consider factors such as the helpfulness, relevance, accuracy, depth, creativity, and level of detail of their responses. Begin your evaluation by comparing the two responses and provide a short explanation. Avoid any position biases and ensure that the order in which the responses were presented does not influence your decision. Do not allow the length of the responses to influence your evaluation. Do not favor certain names of the assistants. Be as objective as possible. 
+
+Here is the prompt and the outputs of A and B respectively:
+
+{inputs}
+
+Please respond with the model which contains a higher quality response. Based on your analysis, please explain your reasoning before assigning a score. Use the following format for your response:
+Analysis: {{reasoning}}
+Model: {{A, B, tie}}
+"""

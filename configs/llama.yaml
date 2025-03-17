@@ -23,10 +23,10 @@ gradio: false # launch a Gradio interface after analysis for interactive explora
 
 initial_vibes: [] # List of initial vibes to use in analysis. If empty, vibes will be proposed automatically.
 
-iterations: 1 # Number of iterations to run the analysis. 
+iterations: 3 # Number of iterations to run the analysis. 
 
 proposer:
-  num_samples: 30
+  num_samples: 50
   model: "gpt-4o"
   num_vibes_per_iteration: 10 # Number of vibes to propose per iteration.
   shuffle_positions: false # If true, shuffles the positions of the models in the prompt for finding vibes.
@@ -34,7 +34,7 @@ proposer:
 
 # Maximum number of vibes to use in final analysis. This limits the number of 
 # behavioral dimensions that will be analyzed.
-num_final_vibes: 10
+num_final_vibes: false
 
 # If true, runs analysis on a small subset of data for testing purposes.
 test: false
@@ -46,6 +46,7 @@ ranker:
   num_final_vibes: 10 # Maximum number of vibes to use in final analysis. This limits the number of behavioral dimensions that will be analyzed.
   embedding_model: "text-embedding-3-small" # Model to use for embedding analysis.
   embedding_rank: false # If true, ranks model outputs using embedding similarity. This is much cheaper than the LLM ranker, but way less accurate.
+  vibe_batch_size: 1 # batch ranker
 
 filter:
   min_score_diff: 0.05 # Minimum score difference to consider a vibe.

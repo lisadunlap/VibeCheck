@@ -6,6 +6,7 @@ num_samples: null
 wandb: true # If true, logs results to Weights & Biases.
 
 output_dir: "./vibecheck_results" # Directory to save results.
+name: null # Name of the experiment, used for saving the pkl file.
 
 models: null  # List of two model names to compare. These should match the column names in the CSV.
 
@@ -15,9 +16,12 @@ project_name: "vibecheck"
 # If true, only runs the vibe proposal step without conducting further analysis.
 proposer_only: false
 
+# llm to use for preference judgment (only used if preference column does not exist)
+preference_judge_llm: "gpt-4o"
+
 # If true, uses all data for training without creating a separate test set.
 # This can be useful for small datasets but may not give reliable accuracy estimates.
-no_holdout_set: false
+no_holdout_set: true
 
 gradio: false # launch a Gradio interface after analysis for interactive exploration of the results.
 
@@ -36,9 +40,10 @@ proposer:
   iteration_prompt: proposer_freeform_iteration # Type of prompt to use for vibe proposal. Found in components/prompts/proposer_prompts.py
   reduction_prompt: reduce_freeform # Type of prompt to use for axis reduction. Found in components/prompts/reduction_prompts.py
 
-# Maximum number of vibes to use in final analysis. This limits the number of 
+# Maximum number of vibes to use per iteration. This limits the number of 
 # behavioral dimensions that will be analyzed.
-num_vibes: 6
+num_vibes: 10
+num_final_vibes: false
 
 # If true, runs analysis on a small subset of data for testing purposes.
 test: false
@@ -47,7 +52,7 @@ ranker:
   single_position_rank: false # If true, only ranks model outputs in one position order. This is faster but may introduce position bias in the analysis.
   model: "gpt-4o-mini"
   solver: "elasticnet" # Solver to use for regression analysis (choices: standard, lasso, elasticnet)
-  num_final_vibes: 10 # Maximum number of vibes to use in final analysis. This limits the number of behavioral dimensions that will be analyzed.
+  # num_final_vibes: null # Maximum number of vibes to use in final analysis. This limits the number of behavioral dimensions that will be analyzed.
   embedding_model: "text-embedding-3-small" # Model to use for embedding analysis.
   embedding_rank: false # If true, ranks model outputs using embedding similarity. This is much cheaper than the LLM ranker, but way less accurate.
   vibe_batch_size: 5 # batch ranker
