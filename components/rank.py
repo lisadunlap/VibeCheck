@@ -26,7 +26,7 @@ class VibeRankerBase:
         """
         pass
 
-    def score_vibe(self, vibe: str, df: pd.DataFrame, models: List[str]) -> pd.DataFrame:
+    def score_batch(self, vibe: List[str], df: pd.DataFrame, models: List[str]) -> pd.DataFrame:
         """
         Scores a given vibe/vibes.
         """
@@ -50,10 +50,10 @@ class VibeRanker(VibeRankerBase):
         for i in range(0, len(vibes), self.vibe_batch_size):
             vibe_batch = vibes[i:i + self.vibe_batch_size]
 
-            scored_df = self.score_vibe(vibe_batch, df)
+            scored_df = self.score_batch(vibe_batch, df)
             if not single_position_rank: 
                 # if we are not ranking in a single position, we need to score the reverse position to account for position bias
-                scored_df_reversed = self.score_vibe(vibe_batch, df, reverse_position=True)
+                scored_df_reversed = self.score_batch(vibe_batch, df, reverse_position=True)
                 scored_df.rename(columns={"score": "score_forward", "score_reversed": "score_backward"}, inplace=True)
                 scored_df_reversed.rename(columns={"score": "score_backward", "score_reversed": "score_forward"}, inplace=True)
                 scored_df = scored_df.merge(scored_df_reversed[["conversation_id","vibe","score_backward"]], on=["conversation_id","vibe"], how="inner")
@@ -87,7 +87,7 @@ class VibeRanker(VibeRankerBase):
                 f"--------------------------------\n\nProperties (restated):\n" + "\n".join(f"Property {i+1}: {vibe}" for i, vibe in enumerate(vibe_batch)) + "\n"
             )
 
-    def score_vibe(self, vibe_batch: List[str], df: pd.DataFrame, reverse_position: bool = False) -> pd.DataFrame:
+    def score_batch(self, vibe_batch: List[str], df: pd.DataFrame, reverse_position: bool = False) -> pd.DataFrame:
         """
         Scores a batch of vibes and returns a DataFrame with the scores.
         """
@@ -151,7 +151,7 @@ class VibeRankerEmbedding(VibeRanker):
         self.embedding_model: str = config["ranker"]["embedding_model"]
         self.vibe_batch_size: int = 1
 
-    def score_vibe(self, vibe: List[str], df: pd.DataFrame) -> pd.DataFrame:
+    def score_batch(self, vibe: List[str], df: pd.DataFrame) -> pd.DataFrame:
         """
         Scores a single vibe using embedding similarity.
         Returns scored dataframe to match parent class interface.
@@ -312,7 +312,7 @@ def convert_scores(scores: List[str], original_models: List[str]) -> List[int]:
 #     df = df.copy()
 #     config["ranker"]["single_position_rank"] = False
 #     ranker = VibeRanker(config)
-#     df = ranker.score_vibe([vibe], df)
+#     df = ranker.score_batch([vibe], df)
     
 #     # Normalize embeddings
 #     df["model_a_embedding"] = df["model_a_embedding"].apply(lambda x: x / np.linalg.norm(x))

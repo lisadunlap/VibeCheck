@@ -156,7 +156,7 @@ def show_examples(selected_vibe, results_dict, model_list_str=None):
         label = f"Example {i}: {preview} (Score: {score:.3f})"
         example_choices.append(label)
     
-    return f"Found {len(example_choices)} examples for vibe: {selected_vibe.replace('**', '')}", gr.Dropdown(choices=example_choices, value=example_choices[0] if example_choices else None)
+    return gr.Dropdown(choices=example_choices, value=example_choices[0] if example_choices else None)
 
 def display_selected_example(example_idx, selected_vibe, results_dict, model_list_str=None):
     """Display a single selected example."""
@@ -196,7 +196,6 @@ def display_selected_example(example_idx, selected_vibe, results_dict, model_lis
     print("+++++++++++")
     print("+++++++++++")
     print("+++++++++++")
-    # md = f"**Example for: {selected_vibe.replace('**', '')}**\n\n"
     md = f"**Prompt:** {row['question']}\n\n"
     
     # Show both model outputs if available
@@ -320,7 +319,7 @@ def create_vibecheck_ui():
                         value=None,
                         allow_custom_value=False,
                     )
-                    load_example_status = gr.Markdown()  # Status message about number of examples
+          
                     load_example_dropdown = gr.Dropdown(
                         label="Select an example to view",
                         choices=[],
@@ -428,7 +427,7 @@ def create_vibecheck_ui():
             load_vibe_dropdown.change(
                 fn=show_examples,
                 inputs=[load_vibe_dropdown, load_results_state],
-                outputs=[load_example_status, load_example_dropdown],
+                outputs=[load_example_dropdown],
             )
 
             # Add handler for example dropdown

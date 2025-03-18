@@ -1,14 +1,14 @@
 # Path to CSV file containing model outputs. Must include columns for model responses 
 # and a 'preference' column indicating which model output was preferred.
-data_path: null  # Required argument
+data_path: data/summarization/summarization_cohere_tnlg.csv  # Required argument
 num_samples: null 
 
 wandb: true # If true, logs results to Weights & Biases.
 
 output_dir: "./vibecheck_results" # Directory to save results.
-name: null # Name of the experiment, used for saving the pkl file.
+name: "summarization-choere-tnlg" # Name of the experiment, used for saving the pkl file.
 
-models: null  # List of two model names to compare. These should match the column names in the CSV.
+models: ["command_xlarge_beta", "TNLGv2"]  # List of two model names to compare. These should match the column names in the CSV.
 
 # Name of the Weights & Biases project where results will be logged.
 project_name: "vibecheck"
@@ -25,7 +25,7 @@ no_holdout_set: true
 
 initial_vibes: [] # List of initial vibes to use in analysis. If empty, vibes will be proposed automatically.
 
-iterations: 1 # Number of iterations to run the analysis. 
+iterations: 2 # Number of iterations to run the analysis. 
 
 # Maximum number of vibes to use per iteration. This limits the number of 
 # behavioral dimensions that will be analyzed.
@@ -67,4 +67,4 @@ filter:
 #   reduction_prompt: reduce_freeform_axis
 
 # ranker:
-#   prompt: ranker_prompt_axis_multi
+#   prompt: ranker_freeform_axis

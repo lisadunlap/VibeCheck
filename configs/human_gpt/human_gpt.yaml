@@ -1,14 +1,14 @@
 # Path to CSV file containing model outputs. Must include columns for model responses 
 # and a 'preference' column indicating which model output was preferred.
-data_path: null  # Required argument
+data_path: "data/human_gpt/human_gpt.csv"  # Required argument
 num_samples: null 
 
 wandb: true # If true, logs results to Weights & Biases.
 
 output_dir: "./vibecheck_results" # Directory to save results.
-name: null # Name of the experiment, used for saving the pkl file.
+name: "human_gpt" # Name of the experiment, used for saving the pkl file.
 
-models: null  # List of two model names to compare. These should match the column names in the CSV.
+models: ["human_answers", "chatgpt_answers"]  # List of two model names to compare. These should match the column names in the CSV.
 
 # Name of the Weights & Biases project where results will be logged.
 project_name: "vibecheck"
@@ -29,7 +29,7 @@ iterations: 1 # Number of iterations to run the analysis.
 
 # Maximum number of vibes to use per iteration. This limits the number of 
 # behavioral dimensions that will be analyzed.
-num_vibes: 5
+num_vibes: 10
 num_final_vibes: false
 
 # If true, runs analysis on a small subset of data for testing purposes.

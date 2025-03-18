@@ -11,11 +11,27 @@ import components.prompts.proposer_prompts as proposer_prompts
 def parse_bullets(text: str):
     lines = text.split("\n")
     bullets = []
+    current_bullet = ""
+    
     for line in lines:
-        if line.strip().startswith("-") or line.strip().startswith("*"):
-            # oply remove the first * if
-            bullets.append(line.replace("* ", "").replace("- ", "").strip())
-    return bullets
+        stripped = line.strip()
+        # Start of a new bullet point
+        if stripped.startswith("-") or stripped.startswith("*"):
+            # Save previous bullet if exists
+            if current_bullet:
+                bullets.append(current_bullet.strip())
+            
+            # Start new bullet, removing the bullet marker
+            current_bullet = stripped.replace("* ", "", 1).replace("- ", "", 1).replace("**", "")
+        # Continuation of current bullet
+        elif stripped:
+            current_bullet += " " + stripped.replace("**", "")
+    
+    # Add the last bullet if there is one
+    if current_bullet:
+        bullets.append(current_bullet.strip())
+    
+    return [bullet.strip() for bullet in bullets if bullet.strip()]
 
 class VibeProposerBase:
     """
@@ -143,8 +159,30 @@ class VibeProposer(VibeProposerBase):
             getattr(reduction_prompts, self.config.reduction_prompt).format(differences='\n'.join(differences)),
             self.config.model
         )
-
+        print(summaries)
         vibes = parse_bullets(summaries)
-        vibes = [vibe.replace("*", "") for vibe in vibes]
+        print(vibes)
+        vibes = [vibe.replace("*", "") for vibe in vibes if vibe != ""]
         print(f"Number of total differences after reduction: {len(vibes)}")
         return vibes[:num_vibes]
+
+class DualVibeProposer(VibeProposerBase):
+    """
+    A VibeProposer that proposes for each side of the model pair.
+    """
+    def propose(
+        self,
+        proposer_df: pd.DataFrame,
+        current_vibes: List[str] = [],
+        num_vibes: int = 10,
+        **kwargs
+    ) -> List[str]:
+        """
+        Given a dataframe of questions and responses, propose new vibe axes (behaviors). 
+        If existing vibes are provided, use them to guide the proposal to find new differences.
+        """
+        vibes_one_way = super().propose(proposer_df, current_vibes, num_vibes, **kwargs)
+        self.models = self.models[::-1]
+        vibes_other_way = super().propose(proposer_df, current_vibes, num_vibes, **kwargs)
+        self.models = self.models[::-1]
+        return vibes_one_way + vibes_other_way

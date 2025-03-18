@@ -74,12 +74,11 @@ ranker_prompt_axis_multi = """You are a fair and unbiased judge. Your task is to
 Instructions: For each property,
 	•	If Response A aligns with the 'high' description more than Response B, respond with "A".
   •	If Response B aligns with the 'high' description more than Response A, respond with "B".
-	•	If the responses are roughly equal on the property, respond with "equal". Use this sparingly, most of the time you should respond with "A" or "B".
+	•	If the responses are roughly equal on the property or neither response contains the property, respond with "equal". Use this sparingly, most of the time you should respond with "A" or "B".
 	•	If the property does not apply to these outputs (e.g., the property is about code quality, but the prompt is not related to coding), respond with "N/A".
 	•	If you are unsure about the meaning of the property, respond with "unsure".
 
-Use the following format for your response:
-
+A group of humans should agree with your decision. The properties will be given in the form of a numbered list. Use the following format for your response:
 Ranking:
 Property 1: {{A, B, equal, N/A, or unsure}}
 Analysis: {{reasoning}}
@@ -92,7 +91,7 @@ Analysis: {{reasoning}}
 Here are the properties and the two responses:
 {inputs}
 
-Remember to be as objective as possible and strictly adhere to the response format."""
+Remember to be as objective as possible and strictly adhere to the response format. You must give a ranking for each property. Do not give any other information in your response."""
 
 
 judge_prompt = """You are an impartial judge and evaluate the quality of the responses provided by two AI assistants (A and B) to the user question displayed below. You should choose the assistant that follows the user’s instructions and answers the user’s question better. Your evaluation should consider factors such as the helpfulness, relevance, accuracy, depth, creativity, and level of detail of their responses. Begin your evaluation by comparing the two responses and provide a short explanation. Avoid any position biases and ensure that the order in which the responses were presented does not influence your decision. Do not allow the length of the responses to influence your evaluation. Do not favor certain names of the assistants. Be as objective as possible. 

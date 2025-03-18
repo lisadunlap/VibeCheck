@@ -37,7 +37,7 @@ def get_llm_output(
     prompt: str | List[str], model: str, cache=True, system_prompt=None, history=[], max_tokens=256
 ) -> str | List[str]:
     if isinstance(prompt, list):
-        with concurrent.futures.ThreadPoolExecutor(max_workers=16) as executor:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=32) as executor:
             futures = [
                 executor.submit(
                     get_llm_output, p, model, cache, system_prompt, history, max_tokens
@@ -176,7 +176,7 @@ def get_llm_output(
 from components.utils_text_embedding import get_text_embedding
 def get_llm_embedding(prompt: str | List[str], model: str, instruction: str = "", cache=True) -> str | List[str]:
     if isinstance(prompt, list):
-        with concurrent.futures.ThreadPoolExecutor(max_workers=16) as executor:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=32) as executor:
             futures = [
                 executor.submit(get_llm_embedding, p, model, instruction, cache)
                 for p in prompt
