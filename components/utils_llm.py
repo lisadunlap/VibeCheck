@@ -206,7 +206,6 @@ def get_llm_embedding(prompt: str | List[str], model: str, instruction: str = ""
                 print(f"Getting embeddings for {prompt} from embedding server")
                 embedding = get_text_embedding([prompt], instruction, server_url="http://localhost:5000")[0]
             else:
-                print(f"getting emb for {prompt}")
                 text = prompt.replace("\n", " ")
                 embedding = (
                     client.embeddings.create(input=[text], model=model).data[0].embedding
@@ -232,7 +231,7 @@ def test_get_llm_output():
     model = "gpt-3.5-turbo"
     completion = get_llm_output(prompt, model)
     print(f"{model=}, {completion=}")
-    model = "vicuna"
+    model = "llama-3-8b"
     completion = get_llm_output(prompt, model)
     print(f"{model=}, {completion=}")
 
