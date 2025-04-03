@@ -12,11 +12,13 @@ def parse_bullets(text: str):
     lines = text.split("\n")
     bullets = []
     current_bullet = ""
+    found_first_bullet = False
     
     for line in lines:
         stripped = line.strip()
         # Start of a new bullet point
         if stripped.startswith("-") or stripped.startswith("*"):
+            found_first_bullet = True
             # Save previous bullet if exists
             if current_bullet:
                 bullets.append(current_bullet.strip())
@@ -24,7 +26,7 @@ def parse_bullets(text: str):
             # Start new bullet, removing the bullet marker
             current_bullet = stripped.replace("* ", "", 1).replace("- ", "", 1).replace("**", "")
         # Continuation of current bullet
-        elif stripped:
+        elif stripped and found_first_bullet:
             current_bullet += " " + stripped.replace("**", "")
     
     # Add the last bullet if there is one
@@ -94,7 +96,10 @@ class VibeProposer(VibeProposerBase):
             batch_differences = self.propose_batch(proposer_df[proposer_df["batch_id"] == batch_id].copy(), current_vibes, self.config.shuffle_positions)
             differences.extend(batch_differences)
 
-        vibes = self.reduce_vibes(differences, num_vibes=num_vibes)
+        if len(differences) > num_vibes:
+            vibes = self.reduce_vibes(differences, num_vibes=num_vibes)
+        else:
+            vibes = differences
 
         wandb.log({"Vibe Proposer/proposer_results": wandb.Table(dataframe=pd.DataFrame(differences, columns=["differences"]))})
         return vibes
@@ -159,9 +164,7 @@ class VibeProposer(VibeProposerBase):
             getattr(reduction_prompts, self.config.reduction_prompt).format(differences='\n'.join(differences)),
             self.config.model
         )
-        print(summaries)
         vibes = parse_bullets(summaries)
-        print(vibes)
         vibes = [vibe.replace("*", "") for vibe in vibes if vibe != ""]
         print(f"Number of total differences after reduction: {len(vibes)}")
         return vibes[:num_vibes]

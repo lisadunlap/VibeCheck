@@ -6,7 +6,7 @@ Below are multiple sets of questions and responses, separated by dashed lines. F
 
 The format should be a list of properties that appear more in one output than the other in the format of a short description of the property. 
 
-Consider differences on many different axes such as tone, language, structure, content, safety, and any other axis that you can think of. If the questions have a specific property or cover a specific topic, also consider differences which are relevant to that property or topic.
+Consider differences on many different axes such as tone, language, structure, content, safety, and any other axis that you can think of. If the questions have a specific property or cover a specific topic (e.g. coding, creative writing, math, etc.), also consider differences which are relevant to that property or topic.
     
 Remember that these differences should be human interpretable and that the differences should be concise, substantive and objective. Write down as many properties as you can find. Do not explain which model has which property, simply describe the property. Your response should not include any mention of Model 1 or Model 2.
 
@@ -21,7 +21,7 @@ Below are multiple sets of questions and responses, separated by dashed lines. F
 
 The format should be a list of properties that appear more in one output than the other in the format of a short description of the property.
 
-Consider differences on many different axes such as tone, language, structure, content, safety, and any other axis that you can think of. If the questions have a specific property or cover a specific topic, also consider differences which are relevant to that property or topic.
+Consider differences on many different axes such as tone, language, structure, content, safety, and any other axis that you can think of. If the questions have a specific property or cover a specific topic (e.g. coding, creative writing, math, etc.), also consider differences which are relevant to that property or topic.
     
 Remember that these differences should be human interpretable and that the differences should be concise, substantive and objective. Write down as many properties as you can find which are not already represented in the list of differences. Do not explain which model has which property, simply describe the property. Your response should not include any mention of Model 1 or Model 2.
 Respond with a list of new properties, each on a new line separated by *. Do NOT include any other text in your response. If there are no substantive differences between the outputs, please respond with only "No differences found."
@@ -33,7 +33,7 @@ proposer_onesided = """You are a machine learning researcher trying to figure ou
 
 The format should be a list of properties that appear more in the output of Model 1 than the output of Model 2 in the format of a short description of the property. Respond with a list of properties, each on a new line.
 
-Consider differences on many different axes such as tone, language, structure, content, safety, and any other axis that you can think of. If the questions have a specific property or cover a specific topic, also consider differences which are relevant to that property or topic.
+Consider differences on many different axes such as tone, language, structure, content, safety, and any other axis that you can think of. If the questions have a specific property or cover a specific topic (e.g. coding, creative writing, math, etc.), also consider differences which are relevant to that property or topic.
     
 Remember that these differences should be human interpretable and that the differences should be concise, substantive and objective. Write down as many properties as you can find. Do not explain which model has which property, simply describe the property. Your response should not include any mention of Model 1 or Model 2, only the properties that are present more in Model 1 than Model 2.
 If there are no substantive differences between the outputs, please respond with only "No differences found."
@@ -47,7 +47,7 @@ Below are multiple sets of questions and responses, separated by dashed lines. F
 
 The format should be a list of properties that appear more in the output of Model 1 than the output of Model 2 in the format of a short description of the property. Respond with a list of properties, each on a new line.
 
-Note that this example is not at all exhaustive, but rather just an example of the format. Consider differences on many different axes such as tone, language, structure, content, safety, and any other axis that you can think of. If the questions have a specific property or cover a specific topic, also consider differences which are relevant to that property or topic.
+Note that this example is not at all exhaustive, but rather just an example of the format. Consider differences on many different axes such as tone, language, structure, content, safety, and any other axis that you can think of. If the questions have a specific property or cover a specific topic (e.g. coding, creative writing, math, etc.), also consider differences which are relevant to that property or topic.
     
 Remember that these differences should be human interpretable and that the differences should be concise, substantive and objective. Write down as many properties as you can find which are not already represented in the list of differences. Do not explain which model has which property, simply describe the property. Your response should not include any mention of Model 1 or Model 2, only the properties that are present more in Model 1 than Model 2. If there are no substantive differences between the outputs, please respond with only "No differences found."
 """
@@ -59,7 +59,7 @@ Here are the questions and responses:
 
 The format should be a list of axes in the format of {{axis}}: High: {{high description}} Low: {{low description}} for each axis, with each axis on a new line separated by *. Do NOT include any other text in your response.
 
-Consider differences on many different axes such as tone, language, structure, content, safety, and any other axis that you can think of. If the questions have a specific property or cover a specific topic, also consider differences which are relevant to that property or topic.
+Consider differences on many different axes such as tone, language, structure, content, safety, and any other axis that you can think of. If the questions have a specific property or cover a specific topic (e.g. coding, creative writing, math, etc.), also consider differences which are relevant to that property or topic.
 If there are no substantive differences between the outputs, please respond with only "No differences found."
 """
 
@@ -73,7 +73,7 @@ Here are the differences I have already found and the questions and responses:
 
 The format should be a list of axes in the format of {{axis}}: High: {{high description}} Low: {{low description}} for each axis, with each axis on a new line separated by *. Do NOT include any other text in your response.
 
-Consider differences on many different axes such as tone, language, structure, content, safety, and any other axis that you can think of. If the questions have a specific property or cover a specific topic, also consider differences which are relevant to that property or topic.
+Consider differences on many different axes such as tone, language, structure, content, safety, and any other axis that you can think of. If the questions have a specific property or cover a specific topic (e.g. coding, creative writing, math, etc.), also consider differences which are relevant to that property or topic.
     
 Remember that these differences should be human interpretable and that the differences should be concise, substantive and objective. Write down as many properties as you can find which are not already represented in the list of differences. Do not explain which model has which property, simply describe the property. Your response should not include any mention of Model 1 or Model 2.
 Respond with a list of new properties, each on a new line separated by *. Do NOT include any other text in your response. If there are no substantive differences between the outputs, please respond with only "No differences found."

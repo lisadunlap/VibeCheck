@@ -13,6 +13,37 @@ from tqdm import tqdm
 from components.utils_llm import get_llm_embedding, get_llm_output
 import components.prompts.ranker_prompts as ranker_prompts
 
+class Vibe:
+    """
+    A class representing a behavioral vibe axis and its associated data.
+    """
+    def __init__(self, description: str):
+        self.description: str = description
+        self.results_bank: List[dict] = []  # List of dicts containing prompt, responses, and scores
+        self.score = None # overall score of the vibe across all results
+        self.metrics = {} # metrics for the vibe across all results
+        
+    def add_result(self, prompt: str, model_responses: dict, score: float):
+        """
+        Add a new result to the vibe's results bank.
+        """
+        self.results_bank.append({
+            "prompt": prompt,
+            "responses": model_responses,
+            "score": score
+        })
+
+    def to_dict(self) -> dict:
+        """
+        Convert the vibe to a dictionary.
+        """
+        return {
+            "description": self.description,
+            "results_bank": self.results_bank,
+            "score": self.score,
+            "metrics": self.metrics
+        }
+
 class VibeRankerBase:
     """
     A class for scoring vibes. 
@@ -42,7 +73,23 @@ class VibeRanker(VibeRankerBase):
         self.models: List[str] = list(config["models"])
         self.vibe_batch_size: int = config["ranker"].get("vibe_batch_size", 5)  # New parameter
 
-    def score(self, vibes: List[str], df: pd.DataFrame, single_position_rank: bool = None) -> pd.DataFrame:
+    def compute_metrics(self, df: pd.DataFrame) -> pd.DataFrame:
+        """
+        Computes the metrics for the given dataframe.
+        """
+        df["pref_score"] = df["score"] * df["preference_feature"]
+        agg_df = (
+            df.groupby("vibe")
+            .agg({"pref_score": "mean", "score": "mean"})
+            .reset_index()
+        ).sort_values(by="score", ascending=False)
+        return [{
+            "vibe": row["vibe"],
+            "pref_score": row["pref_score"],
+            "score": row["score"]
+        } for _, row in agg_df.iterrows()]
+
+    def score(self, vibes: List[str], df: pd.DataFrame, single_position_rank: bool = None) -> pd.DataFrame: 
         """
         Scores the given vibes and returns a DataFrame with the scores per vibe.
         """
@@ -64,7 +111,8 @@ class VibeRanker(VibeRankerBase):
                 scored_df["score"] = scored_df.apply(lambda row: row["score_forward"] if not row["position_matters"] else 0, axis=1)
 
             all_scored_dfs.append(scored_df)
-        return pd.concat(all_scored_dfs)
+        vibe_df = pd.concat(all_scored_dfs)
+        return vibe_df
 
     def generate_ranker_input(self, row: pd.Series, vibe_batch: List[str], models: List[str], reverse_position: bool) -> str:
         """
@@ -142,6 +190,7 @@ class VibeRanker(VibeRankerBase):
 
 from components.utils_llm import get_llm_embedding
 from sklearn.metrics.pairwise import cosine_similarity
+import faiss
 class VibeRankerEmbedding(VibeRanker):
     """
     Uses embedding similarity to score each response pair.
@@ -151,6 +200,17 @@ class VibeRankerEmbedding(VibeRanker):
         self.embedding_model: str = config["ranker"]["embedding_model"]
         self.vibe_batch_size: int = 1
 
+    def batch_cos_sim(self, embeddings: np.ndarray, vibes: np.ndarray) -> np.ndarray:
+        """
+        Computes the cosine similarity between a batch of embeddings and a batch of vibes.
+        If embedding is dimension D, embeddings is (N, D) and vibes is (M, D), then output is (N, M)
+        """
+        index = faiss.IndexFlatIP(embeddings.shape[1])
+        index.add(embeddings)
+        D, I = index.search(vibes, embeddings.shape[0])
+        similarities = D.T
+        return similarities.flatten()
+    
     def score_batch(self, vibe: List[str], df: pd.DataFrame) -> pd.DataFrame:
         """
         Scores a single vibe using embedding similarity.
@@ -162,43 +222,50 @@ class VibeRankerEmbedding(VibeRanker):
         df = df.copy()
         df["vibe"] = [vibe] * len(df)
         template = "Given an assistant response, rate how much it has the following property: '{vibe}'"
-        # template = "Rate how much the response has the property '{vibe}'"
         df["vibe_embedding"] = get_llm_embedding(df["vibe"].apply(lambda x: template.format(vibe=x)).tolist(), self.embedding_model)
-        df["vibe_embedding"] = df["vibe_embedding"].apply(lambda x: x / np.linalg.norm(x))
+        # df["vibe_embedding"] = df["vibe_embedding"].apply(lambda x: x / np.linalg.norm(x))
 
         # Calculate similarities
-        df["model_a_vibe_sim"] = df.apply(
-            lambda row: cosine_similarity(
-                row["model_a_embedding"].reshape(1, -1), 
-                row["vibe_embedding"].reshape(1, -1)
-            )[0][0],
-            axis=1,
-        )
-        df["model_b_vibe_sim"] = df.apply(
-            lambda row: cosine_similarity(
-                row["model_b_embedding"].reshape(1, -1), 
-                row["vibe_embedding"].reshape(1, -1)
-            )[0][0],
-            axis=1,
-        )
+        # df["model_a_vibe_sim"] = df.apply(
+        #     lambda row: cosine_similarity(
+        #         row["model_a_embedding"].reshape(1, -1), 
+        #         row["vibe_embedding"].reshape(1, -1)
+        #     )[0][0],
+        #     axis=1,
+        # )
+        # df["model_b_vibe_sim"] = df.apply(
+        #     lambda row: cosine_similarity(
+        #         row["model_b_embedding"].reshape(1, -1), 
+        #         row["vibe_embedding"].reshape(1, -1)
+        #     )[0][0],
+        #     axis=1,
+        # )
+        vibe_embeddings = np.array(df["vibe_embedding"].tolist()[0])
+        vibe_embeddings = vibe_embeddings.reshape(1, -1)
+
+        df["model_a_vibe_sim"] = self.batch_cos_sim(np.array(df["model_a_embedding"].tolist()), vibe_embeddings)
+        df["model_b_vibe_sim"] = self.batch_cos_sim(np.array(df["model_b_embedding"].tolist()), vibe_embeddings)
+        abs_max = max(df["model_a_vibe_sim"].abs().max(), df["model_b_vibe_sim"].abs().max())
+        df["model_a_vibe_sim"] = df["model_a_vibe_sim"] / abs_max
+        df["model_b_vibe_sim"] = df["model_b_vibe_sim"] / abs_max
 
         self.plot_embedding_similarity(vibe, df, self.models)
 
         # Calculate scores
-        delta = 0.05
-        df["score"] = df.apply(
-            lambda row: 1 if row["model_a_vibe_sim"] > row["model_b_vibe_sim"] + delta else (-1 if row["model_a_vibe_sim"] < row["model_b_vibe_sim"] - delta else 0),
-            axis=1,
-        )
-
-        df['score_pos_model'] = df['model_a_vibe_sim'] - df['model_b_vibe_sim']
+        # delta = 0.05
+        # df["score"] = df.apply(
+        #     lambda row: 1 if row["model_a_vibe_sim"] > row["model_b_vibe_sim"] + delta else (-1 if row["model_a_vibe_sim"] < row["model_b_vibe_sim"] - delta else 0),
+        #     axis=1,
+        # )
+        df["score"] = df["model_a_vibe_sim"] - df["model_b_vibe_sim"]
+        df["score"] = df["score"] / df["score"].abs().max()
 
         # Drop embedding columns
         display_df = df.copy()
         display_df = display_df.drop(columns=["model_a_embedding", "model_b_embedding", "vibe_embedding"])
 
         display_df["score_pos_model"] = [self.models for _ in range(len(df))] # hack: need this for training prediction models
-        # train_embedding_model(df, self.models, vibe, self.embedding_model, self.config)
+        # train_embedding_model(df, self.models, vibe, self.embedding_model, self.config) 
         return display_df 
     
     @staticmethod
@@ -229,7 +296,7 @@ class VibeRankerEmbedding(VibeRanker):
         )
         
         truncated_vibe = ' '.join(vibe.split()[:3])
-        wandb.log({f"Vibe Scoring/embedding_sim_dist_{truncated_vibe}": wandb.Html(fig.to_html())})
+        wandb.log({f"Vibe Scoring/embedding_sim_dist_{truncated_vibe}": wandb.Plotly(fig)})
 
 def ranker_postprocess_multi(output: str, models: List[str]) -> List[str]:
     """
@@ -271,126 +338,127 @@ def convert_scores(scores: List[str], original_models: List[str]) -> List[int]:
     return [1 if score == original_models[0] else -1 if score == original_models[1] else 0 for score in scores]
 
 # THIS IS EXPERIMENTAL BECAUSE EMBEDDING MODELS STILL AREN'T THAT GREAT
-# class VibeDataset(Dataset):
-#     def __init__(self, embeddings: List[np.ndarray], labels: List[int]):
-#         self.embeddings: torch.FloatTensor = torch.FloatTensor(np.stack(embeddings))
-#         self.labels: torch.LongTensor = torch.LongTensor(labels)
+class VibeDataset(Dataset):
+    def __init__(self, embeddings: List[np.ndarray], labels: List[int]):
+        self.embeddings: torch.FloatTensor = torch.FloatTensor(np.stack(embeddings))
+        self.labels: torch.LongTensor = torch.LongTensor(labels)
         
-#     def __len__(self) -> int:
-#         return len(self.labels)
+    def __len__(self) -> int:
+        return len(self.labels)
     
-#     def __getitem__(self, idx: int) -> tuple[torch.FloatTensor, torch.LongTensor]:
-#         return self.embeddings[idx], self.labels[idx]
+    def __getitem__(self, idx: int) -> tuple[torch.FloatTensor, torch.LongTensor]:
+        return self.embeddings[idx], self.labels[idx]
 
-# class VibePredictor(nn.Module):
-#     def __init__(self, embedding_dim: int):
-#         super().__init__()
-#         self.model = nn.Sequential(
-#             nn.Linear(embedding_dim, embedding_dim),
-#             nn.ReLU(),
-#             nn.Linear(embedding_dim, embedding_dim),
-#             nn.ReLU(),
-#             nn.Linear(embedding_dim, 3)  # 3 classes: -1, 0, 1
-#         )
+class VibePredictor(nn.Module):
+    def __init__(self, embedding_dim: int):
+        super().__init__()
+        print(f"Initializing VibePredictor with embedding_dim: {embedding_dim}")
+        self.model = nn.Sequential(
+            nn.Linear(embedding_dim, embedding_dim // 2),
+            nn.ReLU(),
+            nn.Linear(embedding_dim // 2, embedding_dim // 4),
+            nn.ReLU(),
+            nn.Linear(embedding_dim // 4, 3)  # 3 classes: -1, 0, 1
+        )
     
-#     def forward(self, x: torch.FloatTensor) -> torch.FloatTensor:
-#         return self.model(x)
+    def forward(self, x: torch.FloatTensor) -> torch.FloatTensor:
+        return self.model(x)
 
-# def train_embedding_model(df: pd.DataFrame, 
-#                           models: List[str], 
-#                           vibe: str, 
-#                           embedding_model: str, 
-#                           config: OmegaConf) -> pd.DataFrame:
-#     """
-#     Trains an embedding model on the given data using PyTorch. Ranks half the data using the LLM ranker,
-#     trains a neural network to predict the ranker score, then uses it to predict the other half.
-#     This is still in the works.
-#     """
-#     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+def train_embedding_model(df: pd.DataFrame, 
+                          models: List[str], 
+                          vibe: str, 
+                          embedding_model: str, 
+                          config: OmegaConf) -> pd.DataFrame:
+    """
+    Trains an embedding model on the given data using PyTorch. Ranks half the data using the LLM ranker,
+    trains a neural network to predict the ranker score, then uses it to predict the other half.
+    This is still in the works.
+    """
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     
-#     # Prepare data
-#     df = df.copy()
-#     config["ranker"]["single_position_rank"] = False
-#     ranker = VibeRanker(config)
-#     df = ranker.score_batch([vibe], df)
+    # Prepare data
+    df = df.copy()
+    config["ranker"]["single_position_rank"] = False
+    ranker = VibeRanker(config)
+    df = ranker.score_batch([vibe], df)
     
-#     # Normalize embeddings
-#     df["model_a_embedding"] = df["model_a_embedding"].apply(lambda x: x / np.linalg.norm(x))
-#     df["model_b_embedding"] = df["model_b_embedding"].apply(lambda x: x / np.linalg.norm(x))
-#     df["vibe_embedding"] = df["vibe_embedding"].apply(lambda x: x / np.linalg.norm(x))
+    # Normalize embeddings
+    df["model_a_embedding"] = df["model_a_embedding"].apply(lambda x: x / np.linalg.norm(x))
+    df["model_b_embedding"] = df["model_b_embedding"].apply(lambda x: x / np.linalg.norm(x))
+    df["vibe_embedding"] = df["vibe_embedding"].apply(lambda x: x / np.linalg.norm(x))
     
-#     # Calculate response difference embedding
-#     df["response_diff_embedding"] = df["model_a_embedding"] - df["model_b_embedding"]
-#     df["response_diff_embedding"] = df["response_diff_embedding"].apply(lambda x: x / np.linalg.norm(x))
+    # Calculate response difference embedding
+    df["response_diff_embedding"] = df["model_a_embedding"] - df["model_b_embedding"]
+    df["response_diff_embedding"] = df["response_diff_embedding"].apply(lambda x: x / np.linalg.norm(x))
     
-#     # Split data
-#     df_train, df_test = train_test_split(df, test_size=0.5, random_state=42)
+    # Split data
+    df_train, df_test = train_test_split(df, test_size=0.5, random_state=42)
     
-#     # Create datasets
-#     train_dataset = VibeDataset(df_train["response_diff_embedding"].values, df_train["score"].values + 1)  # Shift scores to 0,1,2
-#     test_dataset = VibeDataset(df_test["response_diff_embedding"].values, df_test["score"].values + 1)
+    # Create datasets
+    train_dataset = VibeDataset(df_train["response_diff_embedding"].values, df_train["score"].values + 1)  # Shift scores to 0,1,2
+    test_dataset = VibeDataset(df_test["response_diff_embedding"].values, df_test["score"].values + 1)
     
-#     # Create dataloaders
-#     train_loader = DataLoader(train_dataset, batch_size=32, shuffle=True)
-#     test_loader = DataLoader(test_dataset, batch_size=32)
+    # Create dataloaders
+    train_loader = DataLoader(train_dataset, batch_size=32, shuffle=True)
+    test_loader = DataLoader(test_dataset, batch_size=32)
     
-#     # Initialize model
-#     embedding_dim = len(df_train["response_diff_embedding"].iloc[0])
-#     model = VibePredictor(embedding_dim).to(device)
+    # Initialize model
+    embedding_dim = len(df_train["response_diff_embedding"].iloc[0])
+    model = VibePredictor(embedding_dim).to(device)
     
-#     # Training setup
-#     # Calculate class weights
-#     labels = df_train["score"].values + 1  # Shift scores to 0,1,2
-#     class_counts = np.bincount(labels)
-#     class_weights = torch.FloatTensor(len(class_counts) / class_counts).to(device)
+    # Training setup
+    # Calculate class weights
+    labels = df_train["score"].values + 1  # Shift scores to 0,1,2
+    class_counts = np.bincount(labels)
+    class_weights = torch.FloatTensor(len(class_counts) / class_counts).to(device)
     
-#     criterion = nn.CrossEntropyLoss(weight=class_weights)
-#     optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
+    criterion = nn.CrossEntropyLoss(weight=class_weights)
+    optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
     
-#     # Training loop
-#     num_epochs = 100
-#     for epoch in tqdm(range(num_epochs), desc="Training epochs"):
-#         model.train()
-#         for batch_embeddings, batch_labels in train_loader:
-#             batch_embeddings = batch_embeddings.to(device)
-#             batch_labels = batch_labels.to(device)
+    # Training loop
+    num_epochs = 100
+    for epoch in tqdm(range(num_epochs), desc="Training epochs"):
+        model.train()
+        for batch_embeddings, batch_labels in train_loader:
+            batch_embeddings = batch_embeddings.to(device)
+            batch_labels = batch_labels.to(device)
             
-#             optimizer.zero_grad()
-#             outputs = model(batch_embeddings)
-#             loss = criterion(outputs, batch_labels)
-#             loss.backward()
-#             optimizer.step()
+            optimizer.zero_grad()
+            outputs = model(batch_embeddings)
+            loss = criterion(outputs, batch_labels)
+            loss.backward()
+            optimizer.step()
     
-#     # Evaluation
-#     model.eval()
-#     predictions = []
-#     with torch.no_grad():
-#         for batch_embeddings, _ in test_loader:
-#             batch_embeddings = batch_embeddings.to(device)
-#             outputs = model(batch_embeddings)
-#             _, predicted = torch.max(outputs.data, 1)
-#             predictions.extend(predicted.cpu().numpy())
+    # Evaluation
+    model.eval()
+    predictions = []
+    with torch.no_grad():
+        for batch_embeddings, _ in test_loader:
+            batch_embeddings = batch_embeddings.to(device)
+            outputs = model(batch_embeddings)
+            _, predicted = torch.max(outputs.data, 1)
+            predictions.extend(predicted.cpu().numpy())
     
-#     # Convert predictions back to original scale (-1, 0, 1)
-#     df_test["score_pred"] = [pred - 1 for pred in predictions]
-#     # log distribution of predictions
-#     # Create plotly bar plot of prediction distribution
-#     fig = go.Figure(data=[
-#         go.Bar(
-#             x=list(df_test["score_pred"].value_counts().index),
-#             y=list(df_test["score_pred"].value_counts().values)
-#         )
-#     ])
-#     fig.update_layout(
-#         title=f"Vibe Predictor Distribution - {vibe}",
-#         xaxis_title="Predicted Score",
-#         yaxis_title="Count"
-#     )
-#     wandb.log({f"Vibe Training/vibe_predictor_pred_dist_{vibe}": fig})
+    # Convert predictions back to original scale (-1, 0, 1)
+    df_test["score_pred"] = [pred - 1 for pred in predictions]
+    # log distribution of predictions
+    # Create plotly bar plot of prediction distribution
+    fig = go.Figure(data=[
+        go.Bar(
+            x=list(df_test["score_pred"].value_counts().index),
+            y=list(df_test["score_pred"].value_counts().values)
+        )
+    ])
+    fig.update_layout(
+        title=f"Vibe Predictor Distribution - {vibe}",
+        xaxis_title="Predicted Score",
+        yaxis_title="Count"
+    )
+    wandb.log({f"Vibe Training/vibe_predictor_pred_dist_{vibe}": fig})
     
-#     # Calculate and log accuracy
-#     accuracy = (df_test["score"] == df_test["score_pred"]).mean()
-#     print(f"accuracy: {accuracy}")
-#     wandb.log({f"vibe_predictor_accuracy_{vibe}": accuracy})
+    # Calculate and log accuracy
+    accuracy = (df_test["score"] == df_test["score_pred"]).mean()
+    print(f"accuracy: {accuracy}")
+    wandb.log({f"vibe_predictor_accuracy_{vibe}": accuracy})
     
-#     return df_test
+    return df_test

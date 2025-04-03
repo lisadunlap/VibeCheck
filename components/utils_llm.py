@@ -48,13 +48,13 @@ def get_llm_output(
             return [future.result() for future in futures]
 
     openai.api_base = (
-        "https://api.openai.com/v1" if model != "llama-3-8b" else "http://localhost:8001/v1"
+        "https://api.openai.com/v1" if model != "llama-3-8b" else "http://localhost:8000/v1"
     )
     if "gpt" in model:
         client = OpenAI()
     elif model == "llama-3-8b":
         client = OpenAI(
-            base_url="http://localhost:8001/v1",
+            base_url="http://localhost:8000/v1",
         )
     else:
         client = anthropic.Anthropic()
@@ -184,6 +184,12 @@ def get_llm_embedding(prompt: str | List[str], model: str, instruction: str = ""
             concurrent.futures.wait(futures)
             return [future.result() for future in futures]
 
+    # Truncate text if it's too long (approximately 8192 tokens)
+    MAX_CHARS = 32768  # ~8192 token
+    if len(str(prompt)) > MAX_CHARS:
+        logging.warning(f"Truncating text from {len(prompt)} to {MAX_CHARS} characters")
+        prompt = str(prompt)[:MAX_CHARS]
+
     openai.api_base = "https://api.openai.com/v1"
     client = OpenAI()
     if len(instruction) > 0:
@@ -225,12 +231,12 @@ def get_llm_embedding(prompt: str | List[str], model: str, instruction: str = ""
 
 def test_get_llm_output():
     prompt = "hello"
-    model = "gpt-4"
-    completion = get_llm_output(prompt, model)
-    print(f"{model=}, {completion=}")
-    model = "gpt-3.5-turbo"
-    completion = get_llm_output(prompt, model)
-    print(f"{model=}, {completion=}")
+    # model = "gpt-4"
+    # completion = get_llm_output(prompt, model)
+    # print(f"{model=}, {completion=}")
+    # model = "gpt-3.5-turbo"
+    # completion = get_llm_output(prompt, model)
+    # print(f"{model=}, {completion=}")
     model = "llama-3-8b"
     completion = get_llm_output(prompt, model)
     print(f"{model=}, {completion=}")
@@ -265,5 +271,5 @@ def test_get_llm_embedding():
     print(f"cosine similarity: {np.dot(embedding, far_embedding) / (np.linalg.norm(embedding) * np.linalg.norm(far_embedding))}")
 
 if __name__ == "__main__":
-    # test_get_llm_output()
+    test_get_llm_output()
     test_get_llm_embedding()

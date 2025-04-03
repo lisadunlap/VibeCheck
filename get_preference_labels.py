@@ -1,7 +1,8 @@
 import numpy as np
 import pandas as pd
 import re
-from components.utils_llm import get_llm_output
+from components.utils_llm import get_llm_output, get_llm_embedding
+import wandb
 
 judge_prompt = """You are an impartial judge and evaluate the quality of the responses provided by two AI assistants (A and B) to the user question displayed below. You should choose the assistant that follows the user’s instructions and answers the user’s question better. Your evaluation should consider factors such as the helpfulness, relevance, accuracy, depth, creativity, and level of detail of their responses. Begin your evaluation by comparing the two responses and provide a short explanation. Avoid any position biases and ensure that the order in which the responses were presented does not influence your decision. Do not allow the length of the responses to influence your evaluation. Do not favor certain names of the assistants. Be as objective as possible. Only output tie if the two responses are almost exactly the same.
 
@@ -64,17 +65,17 @@ def __main__():
     parser.add_argument(
         "--data_path",
         type=str,
-        default="data/helm/claude_gemini_gpt_math_cot_bigger.csv",
+        default="data/llama3-70b-arena/llama_vs_not_llama_with_categories.csv",
     )
     parser.add_argument(
         "--models",
         nargs="+",
-        default=["anthropic/claude-3-5-sonnet-20240620", "openai/gpt-4o-2024-08-06"],
+        default=["llama-3-70b-instruct", "not_llama"],
     )
     parser.add_argument(
         "--output_path",
         type=str,
-        default="data/helm/claude_gemini_gpt_math_cot_bigger_w_pref.csv",
+        default="data/llama3-70b-arena/llama_vs_not_llama_with_categories_w_pref.csv",
     )
     parser.add_argument(
         "--judge_model",
@@ -82,12 +83,20 @@ def __main__():
         default="gpt-4o",
         help="model to use for judging preference",
     )
+    parser.add_argument(
+        "--embedding_model",
+        type=str,
+        default="text-embedding-3-large",
+        help="model to use for embedding",
+    )
     parser.add_argument("--test", action="store_true")
     args = parser.parse_args()
 
     df = pd.read_csv(args.data_path)
     if args.test:
         df = df.head(10)
+
+    wandb.init(project="preference_labels", name=args.data_path.split("/")[-1].split(".")[0])
 
     df["judge_input"] = df.apply(
         lambda row: f"Prompt: {row['question']}\n\n-------------\n\nOutput A: {row[args.models[0]]}\n\n-------------\n\nOutput B: {row[args.models[1]]}",
@@ -111,8 +120,15 @@ def __main__():
         lambda x: {"-1": args.models[1], "1": args.models[0], "0": "equal"}[str(x)]
     )
     df["preference_model"] = args.judge_model
+
     print("Preference counts: ", df.preference.value_counts().to_dict())
     print("Position bias counts: ", df.position_bias.value_counts().to_dict())
+    # log to wandb
+    wandb.log({"preference_counts": df.preference.value_counts().to_dict()})
+    wandb.log({"position_bias_counts": df.position_bias.value_counts().to_dict()})
+
+    # log table to wandb
+    wandb.log({"preference_table": wandb.Table(dataframe=df)})
     df.to_csv(args.output_path, index=False)
     print(f"Saved to {args.output_path}")
 

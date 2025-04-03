@@ -59,14 +59,15 @@ def train_and_evaluate_model(
 
     for _ in range(n_bootstrap):
         # Create bootstrap sample from normalized data
-        bootstrap_indices = np.random.choice(n_samples, size=n_samples, replace=True)
+        rng = np.random.RandomState(None)
+        bootstrap_indices = rng.choice(n_samples, size=n_samples, replace=True)
         X_boot = X[bootstrap_indices]
         y_boot = y[bootstrap_indices]
 
         # Split bootstrap sample if requested
         if split_train_test:
             X_train, X_test, y_train, y_test = train_test_split(
-                X_boot, y_boot, test_size=0.5, random_state=None, stratify=y_boot
+                X_boot, y_boot, test_size=0.3, random_state=42, stratify=y_boot
             )
         else:
             X_train, y_train = X_boot, y_boot
@@ -174,11 +175,18 @@ def get_feature_df(vibe_df: pd.DataFrame, models: List[str], flip_identity: bool
     X_pref = feature_df.to_numpy()
 
     # if y_identity is all 1, copy X_pref and negate it
-    if flip_identity and np.all(y_identity == 1):
-        X_pref = np.vstack([X_pref, -1 * X_pref.copy()])
-        y_identity = np.concatenate([y_identity, -1 * y_identity])
-        y_pref = np.concatenate([y_pref, -1 * y_pref])
-        feature_df = pd.concat([feature_df, feature_df.copy()])
+    if np.all(y_identity == 1):
+        if flip_identity:
+            X_pref = np.vstack([X_pref, -1 * X_pref.copy()])
+            y_identity = np.concatenate([y_identity, -1 * y_identity])
+            y_pref = np.concatenate([y_pref, -1 * y_pref])
+            feature_df = pd.concat([feature_df, feature_df.copy()])
+        else:
+            flipped_indices = np.random.permutation(len(X_pref))[:len(X_pref)//2]
+            print(f"Flipping {len(flipped_indices)} rows")
+            X_pref[flipped_indices] = -1 * X_pref[flipped_indices]
+            y_pref[flipped_indices] = -1 * y_pref[flipped_indices]
+            y_identity[flipped_indices] = -1 * y_identity[flipped_indices]
 
     return feature_df, X_pref, y_pref, y_identity
 
@@ -249,7 +257,7 @@ def create_side_by_side_plot(
             return " ".join(words)
         return " ".join(words[:num_words]) + "..."
 
-    # Create both truncated and full labels
+    # Create both truncated and full labels AFTER sorting
     truncated_labels = [truncate_text(label) for label in df[y_col]]
     full_labels = [str(label) for label in df[y_col]]
 
@@ -267,11 +275,11 @@ def create_side_by_side_plot(
                 name=titles[i - 1],
                 orientation="h",
                 marker_color=color,
-                # error_x=error_x,
+                error_x=error_x,
                 hovertemplate="<b>%{customdata}</b><br>"  # Show full label in hover
                 + "Value: %{x}<br>"
                 + "<extra></extra>",
-                customdata=full_labels,  # Full labels for hover
+                customdata=[[label] for label in full_labels],  # Wrap each label in a list
             ),
             row=1,
             col=i,
@@ -450,7 +458,7 @@ def train_embedding_classifier(df: pd.DataFrame,
             
             # Split into train/test sets
             X_train, X_test, y_train, y_test = train_test_split(
-                X_boot, y_boot, test_size=test_size, random_state=None
+                X_boot, y_boot, test_size=test_size, random_state=42
             )
             
             # Convert to PyTorch tensors
