@@ -46,9 +46,9 @@ ranker:
   model: "gpt-4o-mini"
   solver: "elasticnet" # Solver to use for regression analysis (choices: standard, lasso, elasticnet)
   embedding_model: "text-embedding-3-small" # Model to use for embedding analysis.
-  embedding_rank: false # If true, ranks model outputs using embedding similarity. This is much cheaper than the LLM ranker, but way less accurate.
+  embedding_rank: true # If true, ranks model outputs using embedding similarity. This is much cheaper than the LLM ranker, but way less accurate.
   vibe_batch_size: 5 # Number of samples to use for each batch (LLM call) in the vibe ranking. The higher the batch, that faster/cheaper the vibe ranking, but less accurate.
 
 filter:
-  min_score_diff: 0.05 # Minimum score difference to consider a vibe.
-  min_pref_score_diff: 0.05 # Minimum preference score difference to consider a vibe.
+  min_score_diff: 0.0 # Minimum score difference to consider a vibe.
+  min_pref_score_diff: 0.0 # Minimum preference score difference to consider a vibe.
