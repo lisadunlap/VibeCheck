@@ -4,216 +4,39 @@ import pandas as pd
 from plotly import graph_objects as go
 import numpy as np
 import os
-import lotus
-from lotus.models import LM, SentenceTransformersRM
-from lotus.cache import CacheConfig, CacheType, CacheFactory
+import json
+import pickle
+from omegaconf import OmegaConf
 
 from typing import List
 
 from utils import (
-    proposer_postprocess,
-    parse_axes,
+    train_embedding_classifier,
     get_pref_score,
-    train_and_evaluate_model,
-    get_feature_df,
-    ranker_postprocess,
-    create_side_by_side_plot,
 )
+from components.utils_llm import get_llm_embedding, get_llm_output
+import time
+from functools import wraps
 
+def timeit(func):
+    """Decorator to measure the execution time of a function."""
+    @wraps(func)
+    def wrapper(*args, **kwargs):
+        start_time = time.time()
+        result = func(*args, **kwargs)
+        end_time = time.time()
+        elapsed_time = end_time - start_time
+        print(f"Function '{func.__name__}' took {elapsed_time:.4f} seconds to execute.")
+        return result
+    return wrapper
 
-def rank_axes(vibes: List[str], df: pd.DataFrame, models: List[str], single_position_rank: bool = False):
-    """
-    Ranks the two model outputs across the given vibes (axes) using LOTUS ranking prompts.
-    """
-    judge_systems_prompt = """You are a fair and unbiased judge. Your task is to compare the outputs of two language models (A and B) on a given propoery. Which repose better aligns more with the given property, A, B, or equal?
-
-Your sole focus is to determine which response better aligns with the given property, NOT how good or bad the response is. Avoid any position bias and remain as objective as possible. Consider what the property means and how it applies to the outputs. Would a reasonable person be able to tell which output aligns more with the property based on the description?
-
-Instructions:
-	•	If Response A aligns with the property more than Response B, respond with "A".
-    •	If Response B aligns with the property more than Response A, respond with "B".
-	•	If the responses are roughly equal on the property, respond with "equal".
-	•	If the property does not apply to these outputs (e.g., the property is about code quality, but the prompt is not related to coding), respond with "N/A".
-	•	If you are unsure about the meaning of the property, respond with "unsure". Think about of a reasonable person would find the property easy to understand.
-
-A group of humans should agree with your decision. Use the following format for your response:
-Explanation: {{your explanation}}
-Text from outputs which aligns with the property: "{{text from outputs which aligns with the property}}"
-Text from outputs which does not align with the property: "{{text from outputs which does not align with the property}}"
-Model: {{A, B, equal, N/A, or unsure}}
-
-Remember to be as objective as possible and strictly adhere to the response format."""
-
-    ranker_prompt1 = (
-        judge_systems_prompt
-        + """
-Here is the property and the two responses:
-{ranker_inputs}
-
-Remember to be as objective as possible and strictly adhere to the response format.
-"""
-    )
-
-    ranker_prompt2 = (
-        judge_systems_prompt
-        + """
-Here is the property and the two responses:
-{ranker_inputs_reversed}
-
-Remember to be as objective as possible and strictly adhere to the response format.
-"""
-    )
-
-    vibe_dfs = []
-    for vibe in vibes:
-        vibe_df = df.copy()
-        vibe_df["vibe"] = vibe
-        vibe_dfs.append(vibe_df)
-
-    vibe_df = pd.concat(vibe_dfs).reset_index(drop=True)
-
-    # drop any duplicate columns
-    vibe_df = vibe_df.loc[:, ~vibe_df.columns.duplicated()]
-    vibe_df["ranker_inputs"] = vibe_df.apply(
-        lambda row: f"\nProperty: {row['vibe']}\n\nUser prompt:\n{row['question']}\n\nResponse A:\n{row[models[0]]}\n\nResponse B:\n{row[models[1]]}\n\nProperty (restated): {row['vibe']}",
-        axis=1,
-    )
-    if not single_position_rank:
-        vibe_df["ranker_inputs_reversed"] = vibe_df.apply(
-            lambda row: f"Property: {row['vibe']}\nUser prompt:\n{row['question']}\n\nResponse A:\n{row[models[1]]}\n\nResponse B:\n{row[models[0]]}\n\nProperty (restated): {row['vibe']}",
-            axis=1,
-        )
-
-    ranker_1 = vibe_df.sem_map(
-        ranker_prompt1, return_raw_outputs=True, suffix="ranker_output_1"
-    )
-
-    vibe_df = vibe_df.merge(
-        ranker_1[
-            [
-                "vibe",
-                "question",
-                models[0],
-                models[1],
-                "preference",
-                "ranker_output_1",
-                "raw_outputranker_output_1",
-            ]
-        ],
-        on=["vibe", "question", models[0], models[1], "preference"],
-        how="left",
-    )
-    vibe_df["ranker_output_1"] = vibe_df["ranker_output_1"].apply(ranker_postprocess)
-    if not single_position_rank:
-        ranker_2 = vibe_df.sem_map(
-            ranker_prompt2, return_raw_outputs=True, suffix="ranker_output_2"
-        )
-        vibe_df = vibe_df.merge(
-            ranker_2[
-                ["question", models[0], models[1], "preference", "ranker_output_2"]
-            ],
-            on=["question", models[0], models[1], "preference"],
-            how="left",
-        )
-        vibe_df["ranker_output_2"] = vibe_df["ranker_output_2"].apply(
-            ranker_postprocess
-        )
-        vibe_df["position_matters"] = (
-            vibe_df["ranker_output_1"] != -1 * vibe_df["ranker_output_2"]
-        )
-        vibe_df["score"] = vibe_df.apply(
-            lambda row: row["ranker_output_1"] if not row["position_matters"] else 0,
-            axis=1,
-        )
-        wandb.summary["prop_position_collisions"] = vibe_df["position_matters"].mean()
-    else:
-        vibe_df["score"] = vibe_df["ranker_output_1"]
-
-    return vibe_df
-
-
-def create_reduce_prompt(num_reduced_axes: int):
-    return f"""Below is a list of properties that are found in LLM outputs. I would like to summarize this list to AT MOST {num_reduced_axes} representative properties with concise descriptions. Are there any overarching properties that are present in a large number of the properties?
-
-Here is the list of properties:
-{{differences}}
-
-Your final list of simplified properties should be human interpretable. The final list of descriptions should be unambiguous and concise. For example, 
-* "uses a lot of emojis and markdown" is not a good property because a piece of text can have emojies but not markdown, and vice versa. This should be split into two properties: "uses a lot of emojis" and "uses markdown".
-* if two properties are "uses markdown" and "utilizes extensive formatting", text which contains one likely contains the other and should be combined into a single property "uses extensive markdown formatting".
-* "focus on historical context" is not a good property because it is too vague. A better property would be "mentions specific historical events".
-
-Each property should be <= 10 words. Order your final list of properties by how much they are seen in the data. Your response should be a list deliniated with "-"
-"""
-
-
-def propose_vibes(
-    df: pd.DataFrame, models: List[str], num_proposal_samples: int = 30, num_final_vibes: int = 10, batch_size: int = 5
-):
-    proposer_prompt_freeform = """
-You are a machine learning researcher trying to figure out the major differences between the behaviors of two llms by finding differences in their responses to the same set of questions and seeing if these differences correspond with user preferences. Write down as many differences as you can find between the two outputs. Please format your differences as a list of properties that appear more in one output than the other.
-
-Below are multiple sets of questions and responses, separated by dashed lines. For each set, analyze the differences between Model 1 and Model 2. What properties are seen in the responses from Model 1 that are not seen in the responses from Model 2? What properties are seen in the responses from Model 2 that are not seen in the responses from Model 1?
-
-{combined_responses}
-
-The format should be a list of properties that appear more in one output than the other in the format of a short description of the property. An example of a possible output is,
-- "conversational language"
-- "friendly tone"
-- "code that optimizes for runtime"
-- "uses a lot of emojis"
-- "stories presented in the third person"
-
-Note that this example is not at all exhaustive, but rather just an example of the format. Consider differences on many different axes such as tone, language, structure, content, safety, and any other axis that you can think of. 
-    
-Remember that these properties should be human interpretable and that the differences should be concise (<= 10 words), substantive and objective. Write down as many properties as you can find. Do not explain which model has which property, simply describe the property.
-If there are no substantive differences between the outputs, please respond with only "No differences found."
-"""
-    # Create combined responses to get in LOTUS format
-    df["single_combined_response"] = df.apply(
-        lambda row: (
-            f"User prompt:\n{row['question']}\n\n"
-            f"Model 1:\n{row[models[0]]}\n\n"
-            f"Model 2:\n{row[models[1]]}"
-        ),
-        axis=1,
-    )
-    proposer_df = df.sample(num_proposal_samples, random_state=42).reset_index(
-        drop=True
-    )
-    proposer_df["batch_id"] = proposer_df.index // batch_size
-    proposer_df["combined_responses"] = proposer_df.groupby("batch_id")[
-        "single_combined_response"
-    ].transform(lambda x: "\n-------------\n".join(x))
-    proposer_df = proposer_df.drop_duplicates("batch_id")
-    proposer_df = proposer_df.sem_map(
-        proposer_prompt_freeform, return_raw_outputs=True, suffix="differences"
-    )
-
-    proposer_df["differences"] = proposer_df["differences"].apply(proposer_postprocess)
-    wandb.log({"Vibe Proposer/proposer_results": wandb.Table(dataframe=proposer_df)})
-    results = proposer_df[proposer_df["differences"].apply(lambda x: len(x) > 0)]
-    results = results.explode("differences").reset_index(drop=True)
-
-    # Cluster and reduce axes
-    # TODO: fix groupby_clusterid for sem_agg
-    results = results.sem_index("differences", "differences_index").sem_cluster_by(
-        "differences", 1
-    )
-    summaries = results.sem_agg(
-        create_reduce_prompt(num_final_vibes),
-        suffix="reduced axes",
-    )
-    summaries["reduced axes parsed"] = summaries["reduced axes"].apply(parse_axes)
-    vibes = summaries.explode("reduced axes parsed")["reduced axes parsed"].to_list()
-    print("Vibes:\n" + "\n".join(vibes))
-    return vibes
-
-def get_vibe_question_types(vibe_df: pd.DataFrame, batch_size: int = 50):
+def get_vibe_question_types(vibe_df: pd.DataFrame, config: OmegaConf, batch_size: int = 50) -> pd.DataFrame:
     """Describe what types of questions result in high scores for a given vibe."""
-    # Create a copy of the filtered dataframe to avoid warnings
+
     filtered_vibe_df = vibe_df[vibe_df["score"].abs() > 0.0].copy()
-    vibin_questions = filtered_vibe_df.sort_values(["vibe", "score"], ascending=[True, False])
+    vibin_questions = filtered_vibe_df.sort_values(
+        ["vibe", "score"], ascending=[True, False]
+    )
 
     prompt = """You are a machine learning researcher trying to discover what types of questions result in a model exhibiting a certain behavior. Given the following behavior and a list of questions along with a score of how much the model exhibits the behavior on that question, describe what types of questions result in the model exhibiting the behavior. Each score is between 1 and 5, where 1 is does not exhibit the behavior at all, and 5 is exhibits the behavior completely.
 
@@ -232,267 +55,178 @@ Question types which do not exhibit the behavior: <description>
         sampled_df = single_vibe_df.sample(min(batch_size, len(single_vibe_df)))
         input_texts = sampled_df.apply(
             lambda row: f"Behavior: {row['vibe']}\nQuestion: {row['question']}\nScore: {row['score']}",
-            axis=1
+            axis=1,
         ).tolist()
         input_text = "\n-------------\n".join(input_texts)
-        new_df.append({
-            "vibe": vibe,
-            "input_text": input_text
-        })
-    
+        new_df.append({"vibe": vibe, "input_text": input_text})
+
     new_df = pd.DataFrame(new_df)
-    vibe_question_types = new_df.sem_map(
-        prompt, return_raw_outputs=True, suffix="vibe_question_types"
+    new_df["vibe_question_types"] = new_df.apply(
+        lambda row: get_llm_output(prompt.format(input_text=row["input_text"]), config.proposer.model),
+        axis=1,
     )
-    return vibe_question_types
+    return new_df
 
-
-def get_examples_for_vibe(vibe_df: pd.DataFrame, vibe: str, models: List[str], num_examples: int = 5):
-    """Get example pairs where the given vibe was strongly present."""
-    vibe_examples = vibe_df[(vibe_df["vibe"] == vibe) & (vibe_df["score"].abs() > 0.0)]
-    examples = []
-    for _, row in vibe_examples.head(num_examples).iterrows():
-        examples.append(
-            {
-                "prompt": row["question"],
-                "output_a": row[models[0]],
-                "output_b": row[models[1]],
-                "score": row["score"],
-                "core_output": row["raw_outputranker_output_1"],
-            }
-        )
-    return examples
-
-
-def create_gradio_app(vibe_df: pd.DataFrame, models: List[str], coef_df: pd.DataFrame, corr_plot: go.Figure, vibe_question_types: pd.DataFrame):
-    import gradio as gr
-
-    # Create the plots
-    agg_df = (
-        vibe_df.groupby("vibe")
-        .agg({"pref_score": "mean", "score": "mean"})
-        .reset_index()
-    )
-
-    # Create plots and convert them to HTML strings
-    heuristics_plot = create_side_by_side_plot(
-        df=agg_df,
-        y_col="vibe",
-        x_cols=["score", "pref_score"],
-        titles=("Model Identity", "Preference Prediction"),
-        main_title="Vibe Heuristics",
-        models=models,
-    )
-
-    coef_plot = create_side_by_side_plot(
-        df=coef_df,
-        y_col="vibe",
-        x_cols=["coef_modelID", "coef_preference"],
-        titles=("Model Identity", "Preference Prediction"),
-        main_title="Vibe Model Coefficients",
-        models=models,
-        error_cols=["coef_std_modelID", "coef_std_preference"],
-    )
-
-    def show_examples(vibe):
-        examples = get_examples_for_vibe(vibe_df, vibe, models)
-        markdown = f"### What sort of prompts elicit the vibe?\n"
-        markdown += f"{vibe_question_types[vibe_question_types['vibe'] == vibe]['vibe_question_types'].values[0]}\n\n"
-        markdown += "---\n\n"
-        for i, ex in enumerate(examples, 1):
-            markdown += f"### Example {i} ({models[0] if ex['score'] > 0 else models[1]} vibe)\n"
-            markdown += f"**Prompt:**\n{ex['prompt']}\n\n"
-            markdown += f"**{models[0]}:**\n{ex['output_a']}\n\n"
-            markdown += f"**{models[1]}:**\n{ex['output_b']}\n\n"
-            markdown += f"**Ranker Output:**\n{ex['core_output']}\n\n"
-            markdown += "---\n\n"
-        return markdown
-
-    with gr.Blocks() as app:
-        gr.Markdown("# <center>It's all about the ✨vibes✨</center>")
-
-        with gr.Accordion("Plots", open=True):
-            with gr.Row():
-                gr.Plot(heuristics_plot)
-
-            with gr.Row():
-                gr.Plot(coef_plot)
-
-            with gr.Row():
-                gr.Plot(corr_plot)
-
-        gr.Markdown("## Vibe Examples")
-        vibe_df_w_types = vibe_df.merge(vibe_question_types, on="vibe", how="left")
-        vibe_dropdown = gr.Dropdown(
-            choices=vibe_df_w_types["vibe"].unique().tolist(),
-            label="Select a vibe to see examples",
-        )
-        examples_output = gr.Markdown()
-        vibe_dropdown.change(
-            fn=show_examples, inputs=[vibe_dropdown], outputs=[examples_output]
-        )
-
-    return app
-
-
-def create_vibe_correlation_plot(vibe_df: pd.DataFrame, models: List[str]):
-    """Creates a correlation matrix plot for vibe scores."""
-    # Pivot the dataframe to get vibe scores in columns
-    vibe_pivot = vibe_df.pivot_table(
-        index=["question", models[0], models[1]], columns="vibe", values="score"
-    ).reset_index()
-
-    # Calculate correlation matrix for just the vibe scores
-    vibe_cols = vibe_pivot.columns[3:]  # Skip the index columns
-    corr_matrix = vibe_pivot[vibe_cols].corr()
-
-    # Create heatmap
-    fig = go.Figure(
-        data=go.Heatmap(
-            z=corr_matrix,
-            x=corr_matrix.columns,
-            y=corr_matrix.columns,
-            colorscale="RdBu",
-            zmid=0,
-            text=np.round(corr_matrix, 2),
-            texttemplate="%{text}",
-            textfont={"size": 10},
-            hoverongaps=False,
-        )
-    )
-
-    fig.update_layout(
-        title="Vibe Score Correlations",
-        xaxis_tickangle=-45,
-        width=800,
-        height=800,
-    )
-
-    return fig
-
-
-def main(
-    data_path: str,
-    models: List[str],
-    num_proposal_samples: int = 30,
-    num_final_vibes: int = 10,
-    test: bool = False,
-    single_position_rank: bool = False,
-    project_name: str = "vibecheck",
-    proposer_only: bool = False,
-    no_holdout_set: bool = False,
-    gradio: bool = False,
-):
-    """Run VibeCheck analysis to identify and analyze behavioral differences between two language models.
-
-    Args:
-        data_path (str): Path to CSV file containing model outputs. Must include columns for model responses 
-            and a 'preference' column indicating which model output was preferred.
-        models (List[str]): List of two model names to compare. These should match the column names in the CSV.
-        num_proposal_samples (int, optional): Number of samples to use when proposing vibes. Defaults to 30.
-        num_final_vibes (int, optional): Maximum number of vibes to use in final analysis. Defaults to 10.
-        test (bool, optional): If True, runs analysis on a small subset of data for testing. Defaults to False.
-        single_position_rank (bool, optional): If True, only ranks model outputs in one position order.
-            Faster but may introduce position bias. Defaults to False.
-        project_name (str, optional): Name of the Weights & Biases project. Defaults to "vibecheck".
-        proposer_only (bool, optional): If True, only runs the vibe proposal step without analysis. Defaults to False.
-        no_holdout_set (bool, optional): If True, uses all data for training without a test set. Defaults to False.
-        gradio (bool, optional): If True, launches a Gradio interface after analysis. Defaults to False.
-
-    Raises:
-        ValueError: If 'preference' column is not found in the input CSV file.
+def get_preference_labels(df: pd.DataFrame, models: list[str], judge_model: str = "gpt-4o") -> list[str]:
     """
-    # Initialize wandb
-    wandb.init(project=project_name, name=f"{models[0]}_vs_{models[1]}", save_code=True)
+    Takes a dataframe with model outputs and returns preference and position bias lists.
+    """
+    from components.prompts.preference_judge import preference_judge_prompt
+    import re
 
-    output_dir = f"outputs/{data_path.split('/')[-1].replace('.csv', '')}_{models[0]}_vs_{models[1]}"
-    os.makedirs(output_dir, exist_ok=True)
-    # Initialize LOTUS
-    cache_config = CacheConfig(cache_type=CacheType.SQLITE, max_size=1000)
-    cache = CacheFactory.create_cache(cache_config)
-    lm = LM(model="gpt-4o", cache=cache)
-    rm = SentenceTransformersRM(model="intfloat/e5-base-v2")
-    lotus.settings.configure(lm=lm, rm=rm, enable_cache=True)
+    # Create judge inputs
+    df["judge_input"] = df.apply(
+        lambda row: f"Prompt: {row['question']}\n\n-------------\n\nOutput A: {row[models[0]]}\n\n-------------\n\nOutput B: {row[models[1]]}",
+        axis=1,
+    )
+    df["judge_input_reversed"] = df.apply(
+        lambda row: f"Prompt: {row['question']}\n\n-------------\n\nOutput A: {row[models[1]]}\n\n-------------\n\nOutput B: {row[models[0]]}",
+        axis=1,
+    )
+    df["preference"] = get_llm_output([preference_judge_prompt.format(judge_input=row["judge_input"]) for _, row in df.iterrows()], model=judge_model)
+    df["preference_reversed"] = get_llm_output([preference_judge_prompt.format(judge_input=row["judge_input_reversed"]) for _, row in df.iterrows()], model=judge_model)
 
-    # Load and preprocess data
-    df = pd.read_csv(data_path)
-    if test:
-        df = df.sample(100, random_state=42)
-    if "preference" not in df.columns:
-        raise ValueError(
-            "Preference column not found in dataframe. Run get_preference_labels.py first"
-        )
+    def extract_scores(output: str) -> int:
+        output = output.replace("Output ", "").replace("output ", "")
+        output = re.sub(r"[#*]", "", output)
+        score_pattern = re.compile(r"Model: (A|B|tie)", re.IGNORECASE | re.MULTILINE)
+        score = score_pattern.findall(output)
+        end_of_output = output[-20:]
+        end_of_out_pattern = re.compile(r"\b(A|B|tie)\b", re.IGNORECASE | re.MULTILINE)
+        try:
+            if len(score) == 0:
+                score = end_of_out_pattern.findall(end_of_output)
+            if score[0].lower() == "a":
+                return 1
+            elif score[0].lower() == "b":
+                return -1
+            elif score[0].lower() == "tie":
+                return 0
+            else:
+                print(f"Invalid score: {score[0]}")
+                return 0
+        except:
+            print(f"Invalid score: {score}")
+            return 0
+    
+    df["preference_score"] = df.apply(lambda row: extract_scores(row["preference"]), axis=1)
+    df["preference_reversed_score"] = df.apply(lambda row: extract_scores(row["preference_reversed"]), axis=1)
+    df["position_bias"] = df["preference_reversed_score"] == df["preference_score"]
+    df["preference_feature"] = df.apply(
+        lambda row: row["preference_score"] if not row["position_bias"] else 0, axis=1
+    )
+    df["preference_model_name"] = df["preference_feature"].apply(
+        lambda x: {"-1": models[1], "1": models[0], "0": "equal"}[str(x)]
+    )
+    print("Preference counts: ", df["preference_model_name"].value_counts())
+    print("Position bias counts: ", df["position_bias"].value_counts())
+    
+    return df["preference_model_name"].tolist()
 
-    df = df[df["preference"].isin(models)].reset_index(drop=True)
+@timeit
+def vibe_discovery(
+    df: pd.DataFrame, config: OmegaConf, output_dir: str, current_vibes: List[str] = []
+):
+    """
+    Propose new vibe axes (behaviors) and create preference distribution plot.
 
-    print(f"Preference Counts: {df['preference'].value_counts().to_dict()}")
-    wandb.summary["preference_counts"] = df["preference"].value_counts().to_dict()
-    wandb.summary["data_size"] = len(df)
+    Returns:
+        dict: Contains vibes_df and preference distribution plot
+    """
+    from components.propose import VibeProposer
 
-    # Create bar plot of preference distribution
+    models = list(config.models)
+    # Create preference distribution plot
     pref_dist = df["preference"].value_counts()
-    fig = go.Figure(
+    pref_dist_plot = go.Figure(
         data=[go.Bar(x=pref_dist.index, y=pref_dist.values, marker_color="#2ecc71")]
     )
-    fig.update_layout(
+    pref_dist_plot.update_layout(
         title="Model Preference Distribution",
         xaxis_title="Model",
         yaxis_title="Count",
         template="plotly_white",
     )
-    wandb.log({"preference_distribution": wandb.Html(fig.to_html())})
-    fig.write_html(os.path.join(output_dir, "preference_distribution.html"))
-    vibes = propose_vibes(
-        df,
-        models,
-        num_proposal_samples=num_proposal_samples,
-        num_final_vibes=num_final_vibes,
-    )
 
-    # Log vibes to wandb
+    # Log and save preference distribution
+    wandb.log({"preference_distribution": wandb.Html(pref_dist_plot.to_html())})
+    pref_dist_plot.write_html(os.path.join(output_dir, "preference_distribution.html"))
+
+    # Propose vibes
+    vibes = VibeProposer(
+        models,
+        config,
+    ).propose(df.sample(config["proposer"].num_samples, random_state=42).reset_index(drop=True), 
+              current_vibes=current_vibes, 
+              num_vibes=config.num_vibes)
+    if len(current_vibes) > 0:
+        vibes = deduplicate_vibes(vibes + current_vibes)
+    print("Proposed Vibes:")
+    print("* " + "\n* ".join(vibes))
+    print("--------------------------------")
+
     vibes_df = pd.DataFrame({"vibes": vibes})
     wandb.log({"vibes": wandb.Table(dataframe=vibes_df)})
     vibes_df.to_csv(os.path.join(output_dir, "vibes.csv"), index=False)
+    return {"vibes": vibes, "pref_dist_plot": pref_dist_plot}
 
-    if proposer_only:
-        return
+def deduplicate_vibes(vibes: List[str]) -> List[str]:
+    """
+    Deduplicate vibes by removing duplicates and keeping the first occurrence.
+    """
+    prompt = """Here is a list of properties on which two strings may vary.
+{existing_axes} 
+{new_axes}
 
-    # Rank axes
-    lm = LM(model="gpt-4o-mini", cache=cache)
-    lotus.settings.configure(lm=lm, enable_cache=True)
-    if test:
-        vibe_df = rank_axes(
-            vibes[:3], df, models, single_position_rank=single_position_rank
+It is likely that several of these axes measure similar things. Your task is to remove any redundant properties. Think about if a user would gain any new information from seeing both properties. For example, "Emotional Tone: High: Contains emotionally charged language. Low: Maintains a neutral tone." and "Empathy: High: Shows empathy. Low: Only factual answers without empathy." are redundant because they both measure the emotional content of the text. If two similar properties are found, keep the one that is more informative.
+
+Output the reduced list of properties, seperated by a newline. Do not include any other text in your response.
+
+Your Response:"""
+    deduped_vibes = get_llm_output(prompt.format(existing_axes="\n".join(vibes), new_axes="\n".join(vibes)), model="gpt-4o")
+    return deduped_vibes.split("\n")
+
+@timeit
+def vibe_validation(
+    vibes: List[str], 
+    df: pd.DataFrame, 
+    config: OmegaConf, 
+    output_dir: str,
+):
+    """
+    Rank the vibe axes and create visualization plots.
+    """
+    from utils import (
+        create_side_by_side_plot,
+    )
+    from components.rank import VibeRankerEmbedding, VibeRanker
+
+    models = list(config.models)
+    # Rank vibes (list of strings)
+    vibes_to_rank = vibes[:3] if config.test else vibes
+
+    if config.ranker.embedding_rank:
+        print("Using embedding ranker")
+        vibe_ranker = VibeRankerEmbedding(config)
+        vibe_df = vibe_ranker.score(
+            vibes_to_rank,
+            df,
+            single_position_rank=True,
         )
     else:
-        vibe_df = rank_axes(
-            vibes, df, models, single_position_rank=single_position_rank
+        vibe_ranker = VibeRanker(config)
+        vibe_df = vibe_ranker.score(
+            vibes_to_rank,
+            df,
+            single_position_rank=config.ranker.single_position_rank,
         )
 
-    # Compute preference alignment
-    vibe_df["preference_feature"] = vibe_df["preference"].apply(
-        lambda x: get_pref_score(x, models)
-    )
-    vibe_df["pref_score"] = vibe_df["score"] * vibe_df["preference_feature"]
+    metrics = vibe_ranker.compute_metrics(vibe_df)
+    agg_df = pd.DataFrame(metrics)
 
     wandb.log({"Vibe Scoring/ranker_results": wandb.Table(dataframe=vibe_df)})
     vibe_df.to_csv(os.path.join(output_dir, "vibe_df.csv"), index=False)
 
-    agg_df = (
-        vibe_df.groupby("vibe")
-        .agg({"pref_score": "mean", "score": "mean"})
-        .reset_index()
-    )
-    wandb.log({"summary": wandb.Table(dataframe=agg_df)})
-
-    # Get the aggregated data and parse descriptions
-    agg_df = (
-        vibe_df.groupby("vibe")
-        .agg({"pref_score": "mean", "score": "mean"})
-        .reset_index()
-    )
-
-    # First plot (vibe heuristics)
     model_vibe_scores_plot = create_side_by_side_plot(
         df=agg_df,
         y_col="vibe",
@@ -501,55 +235,85 @@ def main(
         main_title="Vibe Heuristics",
         models=models,
     )
-    wandb.log({"Vibe Plots/model_vibe_scores_plot": wandb.Html(model_vibe_scores_plot.to_html())})
-    model_vibe_scores_plot.write_html(os.path.join(output_dir, "model_vibe_scores_plot.html"))
-    # Filter out vibes with low separation or preference
-    vibe_df = vibe_df[vibe_df["score"].abs() > 0.05]
-    vibe_df = vibe_df[vibe_df["pref_score"].abs() > 0.05]
-    print(
-        f"Retained {len(vibe_df.drop_duplicates('vibe'))} vibes with non-trivial separation/preference."
-    )
-    print("Remaining vibes:\n" + "\n".join(vibe_df["vibe"].unique()))
 
-    # Train Preference Prediction and Model Identity Classification Models
-    feature_df, X_pref, y_pref, y_identity = get_feature_df(vibe_df)
+    wandb.log({
+        "Vibe Plots/model_vibe_scores_plot": wandb.Plotly(model_vibe_scores_plot)
+    })
+    model_vibe_scores_plot.write_html(os.path.join(output_dir, "model_vibe_scores_plot.html"))
+
+    return {
+        "vibe_df": vibe_df,
+        "agg_df": agg_df,
+        "model_vibe_scores_plot": model_vibe_scores_plot,
+    }
+
+def filter_vibe_df(vibe_df: pd.DataFrame, config: OmegaConf) -> pd.DataFrame:
+    """
+    Filter the vibe df based on the config.
+    """
+    filtered_vibe_df = vibe_df[vibe_df["score"].abs() > config.filter.min_score_diff]
+    filtered_vibe_df = filtered_vibe_df[filtered_vibe_df["pref_score"].abs() > config.filter.min_pref_score_diff]
+    if len(filtered_vibe_df) < len(vibe_df):
+        print("Removed vibes for low model differentiation or preference alignment:")
+        for vibe in set(vibe_df['vibe'].unique()) - set(filtered_vibe_df["vibe"].unique()):
+            print(f"* {vibe}")
+    print("Remaining vibes:")
+    print("* " + "\n* ".join(filtered_vibe_df["vibe"].unique()))
+    print("--------------------------------")
+    return filtered_vibe_df, set(vibe_df['vibe'].tolist()) - set(filtered_vibe_df["vibe"].unique())
+
+@timeit
+def train_preference_prediction(
+    vibe_df: pd.DataFrame, config: OmegaConf, output_dir: str, models: List[str]
+):
+    """
+    Train models and create all analysis plots.
+
+    Returns:
+        dict: Contains models, plots, and analysis results
+    """
+    from utils import (
+        train_and_evaluate_model,
+        create_side_by_side_plot,
+        create_vibe_correlation_plot,
+    )
+
+    vibe_df, _ = filter_vibe_df(vibe_df, config)
+
+    preference_results = train_and_evaluate_model(
+        vibe_df,
+        models,
+        "preference",
+        split_train_test=not config.no_holdout_set,
+        solver=config.ranker.solver,
+    )
     (
         preference_model,
         preference_coef_df,
-        preference_accuracy_test,
-        preference_acc_std,
-    ) = train_and_evaluate_model(
-        X_pref,
-        y_pref,
-        feature_df.columns,
-        split_train_test=not no_holdout_set,
-        solver="elasticnet",
+        preference_avg_correct,
+        preference_metrics,
+    ) = preference_results
+    identity_results = train_and_evaluate_model(
+        vibe_df,
+        models,
+        "identity",
+        split_train_test=not config.no_holdout_set,
+        solver=config.ranker.solver,
     )
-    identity_model, identity_coef_df, identity_accuracy_test, identity_acc_std = (
-        train_and_evaluate_model(
-            X_pref,
-            y_identity,
-            feature_df.columns,
-            split_train_test=not no_holdout_set,
-            solver="elasticnet",
-        )
+    identity_model, identity_coef_df, identity_avg_correct, identity_metrics = (
+        identity_results
     )
+    metrics = {
+        "identity_metrics": identity_metrics,
+        "preference_metrics": preference_metrics,
+    }
+    wandb.summary.update({"id_accuracy": identity_avg_correct, "pref_accuracy": preference_avg_correct})
+    wandb.log({"preference_vibe_accuracy": preference_avg_correct, "identity_vibe_accuracy": identity_avg_correct})
 
-    wandb.log(
-        {
-            "preference_model_test_accuracy": preference_accuracy_test,
-            "identity_model_test_accuracy": identity_accuracy_test,
-            "preference_model_test_accuracy_std": preference_acc_std,
-            "identity_model_test_accuracy_std": identity_acc_std,
-        }
-    )
-
-    # Merge coefficient data
     coef_df = identity_coef_df.merge(
         preference_coef_df, on="vibe", suffixes=("_modelID", "_preference")
     ).sort_values("coef_preference", ascending=False)
 
-    # Second plot (coefficients)
     coef_plot = create_side_by_side_plot(
         df=coef_df,
         y_col="vibe",
@@ -559,100 +323,245 @@ def main(
         models=models,
         error_cols=["coef_std_modelID", "coef_std_preference"],
     )
-    wandb.log({"Vibe Plots/model_vibe_coef_plot": wandb.Html(coef_plot.to_html())})
+
+    # Create correlation plot (how much the scores overlap)
+    corr_plot = create_vibe_correlation_plot(vibe_df, models)
     coef_plot.write_html(os.path.join(output_dir, "model_vibe_coef_plot.html"))
     coef_df.to_csv(os.path.join(output_dir, "vibecheck_coefficients.csv"), index=False)
-
-    # Log final data
-    wandb.log({"coefficient_data": wandb.Table(dataframe=coef_df)})
-
-    # After creating vibe_df and before training models, add:
-    corr_plot = create_vibe_correlation_plot(vibe_df, models)
-    wandb.log({"Vibe Scoring/vibe_correlations": wandb.Html(corr_plot.to_html())})
     corr_plot.write_html(os.path.join(output_dir, "vibe_correlations.html"))
 
-    vibe_question_types = get_vibe_question_types(vibe_df)
-    wandb.log({"Vibe Scoring/vibe_question_types": wandb.Table(dataframe=vibe_question_types)})
-    vibe_question_types.to_csv(os.path.join(output_dir, "vibe_question_types.csv"), index=False)
-    # Close wandb run
-    wandb.finish()
+    df = vibe_df.drop_duplicates("conversation_id").copy()
+    df.loc[:, "preference_prediction"] = preference_avg_correct
+    df.loc[:, "identity_prediction"] = identity_avg_correct
+    # average the preference and identity predictions to avg_prediction
+    df.loc[:, "avg_prediction"] = (df["preference_prediction"] + df["identity_prediction"]) / 2
 
-    if gradio:
-        print("\nLaunching Gradio app...")
-        app = create_gradio_app(vibe_df, models, coef_df, corr_plot, vibe_question_types)
-        app.launch(share=True)
+    wandb.log({
+        "Vibe Plots/model_vibe_coef_plot": wandb.Plotly(coef_plot),
+        "Vibe Scoring/vibe_correlations": wandb.Plotly(corr_plot),
+        "Vibe Scoring/df_answers": wandb.Table(dataframe=df),
+    })
 
-    return {"output_dir": output_dir,
-            "model_vibe_scores_plot": model_vibe_scores_plot,
-            "score_dist_plot": coef_plot,
-            "vibe_question_types": vibe_question_types,
-            "vibe_df": vibe_df,
-            "agg_df": agg_df,
-            "corr_plot": corr_plot,
+    return {
+        "coef_df": coef_df,
+        "coef_plot": coef_plot,
+        "corr_plot": corr_plot,
+        "metrics": metrics,
+        "df_answers": df,
+    }
+
+
+def main(config):
+    """
+    Run VibeCheck analysis pipeline to identify and analyze behavioral differences
+    between two language models.
+
+    Args:
+        config: OmegaConf configuration object containing all parameters
+        
+    Returns:
+        dict: Results of the analysis including plots and data
+    """
+    import wandb
+    import os
+    import pandas as pd
+
+    models = list(config.models)
+    wandb.init(
+        project=config.project_name,
+        name=f"{models[0]}_vs_{models[1]}" if config.name is None else config.name,
+        save_code=True,
+        config=OmegaConf.to_container(config, resolve=True),
+        entity="clipinvariance",
+    )
+
+    output_dir = f"{config.output_dir}/{config.data_path.split('/')[-1].replace('.csv', '')}_{models[0].replace('/', '_')}_vs_{models[1].replace('/', '_')}"
+    os.makedirs(output_dir, exist_ok=True)
+
+    # Load and preprocess data
+    df = pd.read_csv(config.data_path)
+    if config.test:
+        df = df.sample(min(100, len(df)), random_state=42)
+    
+    if config.get('no_preference', False):
+        print("No preference mode: Setting preference to model name and skipping preference evaluation")
+        # Assign preferences randomly or evenly between the two models
+        df["preference"] = pd.Series(np.random.choice(models, size=len(df)))
+    elif "preference" not in df.columns:
+        print(f"Getting preference labels... using {config.preference_judge_llm}")
+        df["preference"] = get_preference_labels(df, models, config.preference_judge_llm)
+        
+    if not all([c in df.columns for c in models + ["question"]]):
+        raise ValueError(
+            f"Models {models} or question column not found in dataframe."
+        )
+    if config.num_samples is not None:
+        df = df.sample(config.num_samples, random_state=42)
+
+    df = df[df["preference"].isin(models)].reset_index(drop=True)
+    # Compute preference alignment
+    df["preference_feature"] = df["preference"].apply(
+        lambda x: get_pref_score(x, models)
+    )
+    # set conversation_id to be the index of the question, models[0], models[1]
+    df["conversation_id"] = df.index
+    # Log dataset info
+    if config.wandb:
+        wandb.summary.update(
+            {
+                "preference_counts": df["preference"].value_counts().to_dict(),
+                "data_size": len(df),
             }
+        )
+
+    # UNCOMMENT IF YOU WANT TO SEE EMBEDDING CLASSIFICATION
+    # print("Computing embeddings...")
+    # df["model_a_embedding"] = get_llm_embedding(df[models[0]].tolist(), config.ranker.embedding_model)
+    # df["model_b_embedding"] = get_llm_embedding(df[models[1]].tolist(), config.ranker.embedding_model)
+    # df = df[df["model_a_embedding"].notna() & df["model_b_embedding"].notna()]
+    # df["model_a_embedding"] = df["model_a_embedding"].apply(lambda x: x / np.linalg.norm(x))
+    # df["model_b_embedding"] = df["model_b_embedding"].apply(lambda x: x / np.linalg.norm(x))
+
+    # save to embeddings.pkl
+    # with open(os.path.join(output_dir, f"embeddings-{config.ranker.embedding_model}.pkl"), "wb") as f:
+    #     pickle.dump(df[["question", models[0], models[1], "model_a_embedding", "model_b_embedding"]].to_dict(orient="records"), f)
+
+    # print("Training embedding classifier...")
+    # embedding_classifier_results = train_embedding_classifier(df)
+    # if config.wandb:
+    #     wandb.log(embedding_classifier_results)
+
+    running_vibes = config.initial_vibes
+    running_vibe_df = None  # all vibe scores for all iterations
+
+    if len(config.initial_vibes) > 0:
+        running_vibes = list(config.initial_vibes)
+    vibes_each_iteration = []
+    vibes_each_iteration_wandb = []
+    proposer_df = df.sample(config["proposer"].num_samples, random_state=42).reset_index(drop=True)
+    iterations = 1 if config.iterations == 0 else config.iterations
+
+    for iteration in range(iterations):
+        if config.iterations > 0:
+            print(f"Iteration {iteration+1} of {iterations}")
+            # 1. Propose vibes
+            propose_results = vibe_discovery(proposer_df, config, output_dir, running_vibes)
+            if config.proposer_only:
+                if config.wandb:
+                    wandb.finish()
+                return
+            vibes = list(propose_results["vibes"])
+            running_vibes.extend(list(vibes))
+
+        # 2. Rank vibes
+        rank_results = vibe_validation(
+            running_vibes, df, config, output_dir
+        )
+        running_vibe_df = rank_results["vibe_df"]
+
+        running_vibes = sorted(list(running_vibe_df["vibe"].unique().tolist()))
+
+        # 3. Train preference prediction
+        filtered_vibe_df, removed_vibes = filter_vibe_df(rank_results["agg_df"], config)
+        top_vibes = filtered_vibe_df.sort_values("score", ascending=False).head(config.num_final_vibes) if config.num_final_vibes else filtered_vibe_df
+        ranking_df_iteration = running_vibe_df[running_vibe_df["vibe"].isin(top_vibes["vibe"])]
+        train_results = train_preference_prediction(
+            ranking_df_iteration, config, output_dir, models
+        )
+        # merge coef df and agg df
+        train_results["coef_df"] = pd.merge(rank_results["agg_df"], train_results["coef_df"], on="vibe", how="left").dropna()
+
+        vibes_each_iteration_wandb += [{
+            "iteration": iteration,
+            "all_vibes": '\n'.join(running_vibe_df["vibe"].unique()),
+            "kept_vibes": '\n'.join(filtered_vibe_df["vibe"].unique()),
+            "removed_vibes": '\n'.join(removed_vibes),
+            **train_results["metrics"]
+        }]
+
+        vibes_each_iteration += [{
+            "iteration": iteration,
+            "all_vibes": running_vibe_df["vibe"].unique(),
+            "kept_vibes": filtered_vibe_df["vibe"].unique(),
+            "vibe_df": rank_results["agg_df"], 
+            "removed_vibes": removed_vibes,
+            **train_results["metrics"]
+        }]
+
+        if config.wandb:
+            wandb.log({"iteration": iteration, **train_results["metrics"]})
+            wandb.log({"vibes_each_iteration": wandb.Table(dataframe=pd.DataFrame(vibes_each_iteration_wandb))})
+            wandb.log({"vibe_metrics": wandb.Table(dataframe=train_results["coef_df"])})
+        
+        # new proposer df is the the samples which the model id model gets incorrect
+        proposer_df = train_results["df_answers"].sort_values("identity_prediction", ascending=True)[:config["proposer"].num_samples]
+
+    # 4. Get vibe question types (what types of questions result in high scores for a given vibe)
+    vibe_question_types = get_vibe_question_types(ranking_df_iteration, config)
+    if config.wandb:
+        wandb.log(
+            {"Vibe Scoring/vibe_question_types": wandb.Table(dataframe=vibe_question_types)}
+        )
+    vibe_question_types.to_csv(
+        os.path.join(output_dir, "vibe_question_types.csv"), index=False
+    )
+
+    if config.wandb:
+        wandb.summary.update(train_results["metrics"])
+        wandb_run_url = wandb.run.get_url()
+        wandb.finish()
+    else:
+        wandb_run_url = None
+
+    results = {
+        "output_dir": output_dir,
+        "model_vibe_scores_plot": rank_results["model_vibe_scores_plot"],
+        "score_dist_plot": train_results["coef_plot"],
+        "vibe_prediction_metrics": train_results["metrics"],
+        "vibe_question_types": vibe_question_types,
+        "vibe_df": ranking_df_iteration,
+        "vibe_df_all": running_vibe_df,
+        "corr_plot": train_results["corr_plot"],
+        "vibes_each_iteration": vibes_each_iteration,
+        "wandb_run_url": wandb_run_url,
+        "df": df, 
+        "models": models,
+        "scores_df": train_results["coef_df"],
+        # "embedding_classifier_results": embedding_classifier_results,
+        "config": OmegaConf.to_container(config, resolve=True),
+    }
+
+    if config.name is not None:
+        if config.ranker.embedding_rank:
+            results_file = os.path.join(config['output_dir'], f"{config.name}-embedding-ranker.pkl")
+        else:
+            results_file = os.path.join(config['output_dir'], f"{config.name}.pkl")
+    else:
+        results_file = os.path.join(config['output_dir'], f"{output_dir.split('/')[-1]}.pkl")
+    print(f"Saving results to {results_file}")
+    with open(results_file, "wb") as f:
+        pickle.dump(results, f)
+    return results
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(
-        description="Run VibeCheck analysis on model outputs."
-    )
-    parser.add_argument(
-        "--data_path",
-        type=str,
-        required=True,
-        help="Path to the CSV file containing model outputs",
-    )
-    parser.add_argument(
-        "--models",
-        nargs="+",
-        required=True,
-        help="Models to compare",
-    )
-    parser.add_argument(
-        "--num_proposal_samples",
-        type=int,
-        default=30,
-        help="Number of samples to use for proposing vibes",
-    )
-    parser.add_argument(
-        "--project", type=str, default="vibecheck", help="Wandb project name"
-    )
-    parser.add_argument("--test", action="store_true", help="Run in test mode")
-    parser.add_argument(
-        "--single_position_rank",
-        action="store_true",
-        help="Don't rerun ranker with different positions, faster but may lead to position bias",
-    )
-    parser.add_argument(
-        "--num_final_vibes",
-        type=int,
-        default=10,
-        help="Number of final vibes to use for analysis",
-    )
-    parser.add_argument(
-        "--solver",
-        type=str,
-        default="elasticnet",
-        help="Solver to use for logistic regression (standard, lasso, elasticnet)",
-    )
-    parser.add_argument(
-        "--proposer_only", action="store_true", help="Only run the proposer"
-    )
-    parser.add_argument("--gradio", action="store_true", help="Run the Gradio app")
-    parser.add_argument(
-        "--no_holdout_set", action="store_true", help="Don't split into a holdout set"
-    )
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--config", type=str, default="configs/base.yaml")
+    known_args, unknown_args = parser.parse_known_args()
 
-    args = parser.parse_args()
-    main(
-        args.data_path,
-        args.models,
-        args.num_proposal_samples,
-        args.num_final_vibes,
-        args.test,
-        args.single_position_rank,
-        args.project,
-        args.proposer_only,
-        args.no_holdout_set,
-        args.gradio,
-    )
+    base_config = OmegaConf.load("configs/base.yaml")
+    user_config = OmegaConf.load(known_args.config)
+    config = OmegaConf.merge(base_config, user_config)
+
+    cli_config = OmegaConf.from_cli(unknown_args)
+    config = OmegaConf.merge(config, cli_config)
+
+    if config.data_path is None:
+        raise ValueError("data_path must be specified.")
+    if config.models is None:
+        raise ValueError("models must be specified.")
+
+    if not config.wandb:
+        os.environ["WANDB_MODE"] = "offline"
+
+    main(config)
