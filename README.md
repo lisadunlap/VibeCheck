@@ -1,7 +1,7 @@
 # Give your generative models a ✨vibe check✨
 
 
-### [VibeCheck: Discover and Quantify Qualitative Differences in Large Language Models](https://arxiv.org/abs/2410.12851)
+### [VibeCheck: Discover and Quantify Qualitative Differences in Large Language Models](https://bench-mark.org)
 
 <p align="center">
   <img src="method_vibecheck.png" width="800">
