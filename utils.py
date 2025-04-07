@@ -59,14 +59,15 @@ def train_and_evaluate_model(
 
     for _ in range(n_bootstrap):
         # Create bootstrap sample from normalized data
-        bootstrap_indices = np.random.choice(n_samples, size=n_samples, replace=True)
+        rng = np.random.RandomState(None)
+        bootstrap_indices = rng.choice(n_samples, size=n_samples, replace=True)
         X_boot = X[bootstrap_indices]
         y_boot = y[bootstrap_indices]
 
         # Split bootstrap sample if requested
         if split_train_test:
             X_train, X_test, y_train, y_test = train_test_split(
-                X_boot, y_boot, test_size=0.5, random_state=42, stratify=y_boot
+                X_boot, y_boot, test_size=0.3, random_state=42, stratify=y_boot
             )
         else:
             X_train, y_train = X_boot, y_boot
@@ -113,8 +114,8 @@ def train_and_evaluate_model(
     all_predictions = all_predictions.reset_index()
     avg_correct = all_predictions.groupby("conversation_id")["correct"].mean().to_frame()
 
-    print(f"Accuracy ({solver}): {accuracy:.3f} ± {acc_std:.3f}")
-    print(f"95% CI: [{acc_ci[0]:.3f}, {acc_ci[1]:.3f}]")
+    print(f"{label} Accuracy ({solver}): {accuracy:.3f} ± {acc_std:.3f}")
+    print(f"{label} 95% CI: [{acc_ci[0]:.3f}, {acc_ci[1]:.3f}]")
 
     # Calculate feature importance metrics
     if solver == "standard":
@@ -130,11 +131,9 @@ def train_and_evaluate_model(
     coef_df = pd.DataFrame({
         "vibe": feature_names,
         "coef": np.mean(bootstrap_coefs, axis=0),
-        # "coef": np.mean(normalized_coefs, axis=0),  # Add mean of normalized coefs
         "selection_frequency": coef_nonzero if solver != "standard" else 1.0,
         "p_value": p_values,
-        # "coef_std": np.std(bootstrap_coefs, axis=0),
-        "coef_std": np.std(bootstrap_coefs, axis=0),  # Add normalized std dev
+        "coef_std": np.std(bootstrap_coefs, axis=0),
         "coef_lower_ci": coef_ci[0],
         "coef_upper_ci": coef_ci[1]
     })
@@ -151,7 +150,12 @@ def train_and_evaluate_model(
             ascending=[False, False, True]
         )
 
-    return model, coef_df, accuracy, acc_std, avg_correct
+    metrics = {
+        "accuracy": accuracy,
+        "acc_std": acc_std,
+        "acc_ci": acc_ci,
+    }
+    return model, coef_df, avg_correct, metrics
 
 
 def get_feature_df(vibe_df: pd.DataFrame, models: List[str], flip_identity: bool = False):
@@ -171,11 +175,18 @@ def get_feature_df(vibe_df: pd.DataFrame, models: List[str], flip_identity: bool
     X_pref = feature_df.to_numpy()
 
     # if y_identity is all 1, copy X_pref and negate it
-    if flip_identity and np.all(y_identity == 1):
-        X_pref = np.vstack([X_pref, -1 * X_pref.copy()])
-        y_identity = np.concatenate([y_identity, -1 * y_identity])
-        y_pref = np.concatenate([y_pref, -1 * y_pref])
-        feature_df = pd.concat([feature_df, feature_df.copy()])
+    if np.all(y_identity == 1):
+        if flip_identity:
+            X_pref = np.vstack([X_pref, -1 * X_pref.copy()])
+            y_identity = np.concatenate([y_identity, -1 * y_identity])
+            y_pref = np.concatenate([y_pref, -1 * y_pref])
+            feature_df = pd.concat([feature_df, feature_df.copy()])
+        else:
+            flipped_indices = np.random.permutation(len(X_pref))[:len(X_pref)//2]
+            print(f"Flipping {len(flipped_indices)} rows")
+            X_pref[flipped_indices] = -1 * X_pref[flipped_indices]
+            y_pref[flipped_indices] = -1 * y_pref[flipped_indices]
+            y_identity[flipped_indices] = -1 * y_identity[flipped_indices]
 
     return feature_df, X_pref, y_pref, y_identity
 
@@ -246,7 +257,7 @@ def create_side_by_side_plot(
             return " ".join(words)
         return " ".join(words[:num_words]) + "..."
 
-    # Create both truncated and full labels
+    # Create both truncated and full labels AFTER sorting
     truncated_labels = [truncate_text(label) for label in df[y_col]]
     full_labels = [str(label) for label in df[y_col]]
 
@@ -268,7 +279,7 @@ def create_side_by_side_plot(
                 hovertemplate="<b>%{customdata}</b><br>"  # Show full label in hover
                 + "Value: %{x}<br>"
                 + "<extra></extra>",
-                customdata=full_labels,  # Full labels for hover
+                customdata=[[label] for label in full_labels],  # Wrap each label in a list
             ),
             row=1,
             col=i,
@@ -289,8 +300,8 @@ def create_side_by_side_plot(
 
     for i, subtitle in enumerate(
         [
-            f"Seperability Score<br>{models[0]}(+) vs {models[1]}(-)",
-            f"Seperability Score<br>Preferred(+) vs Unpreferred(-)",
+            f"Seperability Score<br>{models[0]} is +<br>{models[1]} is -",
+            f"Seperability Score<br>Preferred is +<br>Unpreferred is -",
         ],
         1,
     ):
@@ -326,83 +337,6 @@ def get_examples_for_vibe(
             }
         )
     return examples
-
-
-def create_gradio_app(
-    vibe_df: pd.DataFrame,
-    models: List[str],
-    coef_df: pd.DataFrame,
-    corr_plot: go.Figure,
-    vibe_question_types: pd.DataFrame,
-):
-    import gradio as gr
-
-    # Create the plots
-    agg_df = (
-        vibe_df.groupby("vibe")
-        .agg({"pref_score": "mean", "score": "mean"})
-        .reset_index()
-    )
-
-    # Create plots and convert them to HTML strings
-    heuristics_plot = create_side_by_side_plot(
-        df=agg_df,
-        y_col="vibe",
-        x_cols=["score", "pref_score"],
-        titles=("Model Identity", "Preference Prediction"),
-        main_title="Vibe Heuristics",
-        models=models,
-    )
-
-    coef_plot = create_side_by_side_plot(
-        df=coef_df,
-        y_col="vibe",
-        x_cols=["coef_modelID", "coef_preference"],
-        titles=("Model Identity", "Preference Prediction"),
-        main_title="Vibe Model Coefficients",
-        models=models,
-        error_cols=["coef_std_modelID", "coef_std_preference"],
-    )
-
-    def show_examples(vibe):
-        examples = get_examples_for_vibe(vibe_df, vibe, models)
-        markdown = f"### What sort of prompts elicit the vibe?\n"
-        markdown += f"{vibe_question_types[vibe_question_types['vibe'] == vibe]['vibe_question_types'].values[0]}\n\n"
-        markdown += "---\n\n"
-        for i, ex in enumerate(examples, 1):
-            markdown += f"### Example {i} ({models[0] if ex['score'] > 0 else models[1]} vibe)\n"
-            markdown += f"**Prompt:**\n{ex['prompt']}\n\n"
-            markdown += f"**{models[0]}:**\n{ex['output_a']}\n\n"
-            markdown += f"**{models[1]}:**\n{ex['output_b']}\n\n"
-            markdown += f"**Ranker Output:**\n{ex['core_output']}\n\n"
-            markdown += "---\n\n"
-        return markdown
-
-    with gr.Blocks() as app:
-        gr.Markdown("# <center>It's all about the ✨vibes✨</center>")
-
-        with gr.Accordion("Plots", open=True):
-            with gr.Row():
-                gr.Plot(heuristics_plot)
-
-            with gr.Row():
-                gr.Plot(coef_plot)
-
-            with gr.Row():
-                gr.Plot(corr_plot)
-
-        gr.Markdown("## Vibe Examples")
-        vibe_df_w_types = vibe_df.merge(vibe_question_types, on="vibe", how="left")
-        vibe_dropdown = gr.Dropdown(
-            choices=vibe_df_w_types["vibe"].unique().tolist(),
-            label="Select a vibe to see examples",
-        )
-        examples_output = gr.Markdown()
-        vibe_dropdown.change(
-            fn=show_examples, inputs=[vibe_dropdown], outputs=[examples_output]
-        )
-
-    return app
 
 
 def create_vibe_correlation_plot(vibe_df: pd.DataFrame, models: List[str]):
@@ -487,7 +421,8 @@ def train_embedding_classifier(df: pd.DataFrame,
                             device: str = "cuda" if torch.cuda.is_available() else "cpu",
                             batch_size: int = 32,
                             epochs: int = 10,
-                            lr: float = 0.001) -> dict:
+                            lr: float = 0.001,
+                            test_size: float = 0.3) -> dict:
     """
     Train a PyTorch MLP classifier on embedding differences between two models and compute confidence intervals.
     
@@ -498,6 +433,7 @@ def train_embedding_classifier(df: pd.DataFrame,
         batch_size: Batch size for training
         epochs: Number of training epochs
         lr: Learning rate
+        test_size: Proportion of data to use for testing (default: 0.3)
     
     Returns:
         dict: Contains classifier, accuracies, and confidence intervals
@@ -507,87 +443,77 @@ def train_embedding_classifier(df: pd.DataFrame,
     X_diff_1 = np.array([b - a for a, b in zip(df["model_a_embedding"], df["model_b_embedding"])])
     X = np.vstack([X_diff_0, X_diff_1])
     y = np.hstack([np.zeros(len(df)), np.ones(len(df))])
+    y_pref = np.hstack([df["preference_feature"], -1 * df["preference_feature"]])
+    # turn -1 into 0
+    y_pref = np.where(y_pref == -1, 0, y_pref)
     
-    # Initial train-test split
-    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
-    
-    def train_model(X_train, y_train, X_test, y_test):
-        # Convert to PyTorch tensors
-        X_train_tensor = torch.FloatTensor(X_train).to(device)
-        y_train_tensor = torch.FloatTensor(y_train).to(device)
-        X_test_tensor = torch.FloatTensor(X_test).to(device)
-        y_test_tensor = torch.FloatTensor(y_test).to(device)
+    def train_and_bootstrap(X, y, label="model_id"):
+        bootstrap_acc = []
         
-        # Create data loaders
-        train_dataset = TensorDataset(X_train_tensor, y_train_tensor.unsqueeze(1))
-        train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
-        
-        # Initialize model
-        model = EmbeddingMLP(input_dim=X_train.shape[1]).to(device)
-        criterion = nn.BCELoss()
-        optimizer = torch.optim.Adam(model.parameters(), lr=lr)
-        
-        # Training loop
-        model.train()
-        for epoch in range(epochs):
-            for batch_X, batch_y in train_loader:
-                optimizer.zero_grad()
-                outputs = model(batch_X)
-                loss = criterion(outputs, batch_y)
-                loss.backward()
-                optimizer.step()
-        
-        # Evaluation
-        model.eval()
-        with torch.no_grad():
-            train_preds = (model(X_train_tensor) >= 0.5).float()
-            test_preds = (model(X_test_tensor) >= 0.5).float()
+        for _ in tqdm(range(n_bootstrap), desc=f"Bootstrapping {label}"):
+            # Bootstrap sampling
+            idx = np.random.choice(len(X), size=len(X), replace=True)
+            X_boot = X[idx]
+            y_boot = y[idx]
             
-            train_acc = (train_preds.squeeze() == y_train_tensor).float().mean().item()
-            test_acc = (test_preds.squeeze() == y_test_tensor).float().mean().item()
+            # Split into train/test sets
+            X_train, X_test, y_train, y_test = train_test_split(
+                X_boot, y_boot, test_size=test_size, random_state=42
+            )
+            
+            # Convert to PyTorch tensors
+            X_train_tensor = torch.FloatTensor(X_train).to(device)
+            y_train_tensor = torch.FloatTensor(y_train).to(device)
+            X_test_tensor = torch.FloatTensor(X_test).to(device)
+            y_test_tensor = torch.FloatTensor(y_test).to(device)
+            
+            # Create data loader
+            train_loader = DataLoader(
+                TensorDataset(X_train_tensor, y_train_tensor.unsqueeze(1)), 
+                batch_size=batch_size, 
+                shuffle=True
+            )
+            
+            # Initialize model
+            model = EmbeddingMLP(input_dim=X.shape[1]).to(device)
+            criterion = nn.BCELoss()
+            optimizer = torch.optim.Adam(model.parameters(), lr=lr)
+            
+            # Training loop
+            model.train()
+            for epoch in range(epochs):
+                for batch_X, batch_y in train_loader:
+                    optimizer.zero_grad()
+                    loss = criterion(model(batch_X), batch_y)
+                    loss.backward()
+                    optimizer.step()
+            
+            # Evaluation on test set
+            model.eval()
+            with torch.no_grad():
+                y_pred = model(X_test_tensor)
+                acc = ((y_pred >= 0.5).float().squeeze() == y_test_tensor).float().mean().item()
+            
+            bootstrap_acc.append(acc)
         
-        return model, train_acc, test_acc
-    
-    # Train base model
-    base_model, train_acc, test_acc = train_model(X_train, y_train, X_test, y_test)
-    
-    # Bootstrap for confidence intervals
-    print("Running bootstrap iterations...")
-    bootstrap_train_acc = []
-    bootstrap_test_acc = []
-    
-    for _ in tqdm(range(n_bootstrap)):
-        # Sample with replacement
-        train_idx = np.random.choice(len(X_train), size=len(X_train), replace=True)
-        test_idx = np.random.choice(len(X_test), size=len(X_test), replace=True)
+        mean_acc = np.mean(bootstrap_acc)
+        ci = np.percentile(bootstrap_acc, [2.5, 97.5])
         
-        X_train_boot = X_train[train_idx]
-        y_train_boot = y_train[train_idx]
-        X_test_boot = X_test[test_idx]
-        y_test_boot = y_test[test_idx]
-        
-        # Train and evaluate
-        _, train_acc_boot, test_acc_boot = train_model(
-            X_train_boot, y_train_boot, X_test_boot, y_test_boot
-        )
-        
-        bootstrap_train_acc.append(train_acc_boot)
-        bootstrap_test_acc.append(test_acc_boot)
+        return mean_acc, ci
     
-    # Calculate confidence intervals (95%)
-    train_ci = np.percentile(bootstrap_train_acc, [2.5, 97.5])
-    test_ci = np.percentile(bootstrap_test_acc, [2.5, 97.5])
+    print("Training model_id classifier...")
+    model_id_acc, model_id_ci = train_and_bootstrap(X, y, "model_id")
+    print(f"Model ID accuracy: {model_id_acc:.3f} (95% CI: [{model_id_ci[0]:.3f}, {model_id_ci[1]:.3f}])")
     
+    print("Training preference classifier...")
+    preference_acc, preference_ci = train_and_bootstrap(X, y_pref, "preference")
+    print(f"Preference accuracy: {preference_acc:.3f} (95% CI: [{preference_ci[0]:.3f}, {preference_ci[1]:.3f}])")
+
     results = {
-        "classifier": base_model,
-        "train_accuracy": train_acc,
-        "test_accuracy": test_acc,
-        "train_ci": train_ci,
-        "test_ci": test_ci
+        "embedding_mlp_model_id_accuracy": model_id_acc,
+        "embedding_mlp_model_id_ci": model_id_ci,
+        "embedding_mlp_preference_accuracy": preference_acc,
+        "embedding_mlp_preference_ci": preference_ci
     }
-    
-    print(f"PyTorch MLP Embedding Classifier Results:")
-    print(f"Train accuracy: {train_acc:.3f} (95% CI: [{train_ci[0]:.3f}, {train_ci[1]:.3f}])")
-    print(f"Test accuracy: {test_acc:.3f} (95% CI: [{test_ci[0]:.3f}, {test_ci[1]:.3f}])")
     
     return results

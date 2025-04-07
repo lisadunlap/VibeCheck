@@ -45,10 +45,6 @@ This runs a toy example on LLM outputs, one model is prompted to be friendly, th
 
 Alternatively, you can set a custom [config](configs/base.yaml) and run with `python main.py --config configs/my_config.yaml [any other args you want to override]`
 
-**Note:** We use a slightly different definition of vibe than the paper (e.g. "friendly tone" instead of "Tone: High: friendly Low: cold"). I think this definition is more intuitive, but if you want to use the paper definition, you can run `main_old.py` with the same arguments.
-
-*Gradio Visualization:* Add the `gradio=true` flag to see a gradio visualization of the data. This is useful for debugging the ranker outputs by looking at the pairwise comparisons.
-
 ## Data Structure
 
 All data needs to contain the columns "question", model_name_1, model_name_2, and optionally "preference". If the preference column is not provided, run `generate_preference_labels.py` to compute the preference via LLM as a judge.

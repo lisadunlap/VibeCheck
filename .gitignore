@@ -171,3 +171,9 @@ wandb/
 
 # config runs
 /pipeline_results
+
+venv/
+__pycache__/
+*.pyc
+uploads/*
+!uploads/.gitkeep
