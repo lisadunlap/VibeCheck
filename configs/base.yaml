@@ -54,7 +54,7 @@ ranker:
   embedding_model: "text-embedding-3-large" # Model to use for embedding analysis.
   embedding_rank: false # If true, ranks model outputs using embedding similarity. This is much cheaper than the LLM ranker, but way less accurate.
   vibe_batch_size: 5 # batch ranker
-  prompt: ranker_prompt_multi # Type of prompt to use for ranker. Found in components/prompts/ranker_prompts.py
+  prompt: ranker_prompt_axis_multi # Type of prompt to use for ranker. Found in components/prompts/ranker_prompts.py
 
 filter:
   min_score_diff: 0.05 # Minimum score difference to consider a vibe.
@@ -67,4 +67,4 @@ filter:
 #   reduction_prompt: reduce_freeform
 
 # ranker:
-#   prompt: ranker_prompt_axis_multi
+#   prompt: ranker_prompt_multi

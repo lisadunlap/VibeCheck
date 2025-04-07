@@ -61,12 +61,3 @@ ranker:
 filter:
   min_score_diff: 0.05 # Minimum score difference to consider a vibe.
   min_pref_score_diff: 0.05 # Minimum preference score difference to consider a vibe.
-
-# uncomment to use the paper definition of vibes
-# proposer:
-#   prompt: proposer_freeform_axis
-#   iteration_prompt: proposer_freeform_iteration_axis
-#   reduction_prompt: reduce_freeform_axis
-
-# ranker:
-#   prompt: ranker_freeform_axis
