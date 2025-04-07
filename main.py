@@ -414,21 +414,22 @@ def main(config):
             }
         )
 
-    print("Computing embeddings...")
-    df["model_a_embedding"] = get_llm_embedding(df[models[0]].tolist(), config.ranker.embedding_model)
-    df["model_b_embedding"] = get_llm_embedding(df[models[1]].tolist(), config.ranker.embedding_model)
-    df = df[df["model_a_embedding"].notna() & df["model_b_embedding"].notna()]
-    df["model_a_embedding"] = df["model_a_embedding"].apply(lambda x: x / np.linalg.norm(x))
-    df["model_b_embedding"] = df["model_b_embedding"].apply(lambda x: x / np.linalg.norm(x))
+    # UNCOMMENT IF YOU WANT TO SEE EMBEDDING CLASSIFICATION
+    # print("Computing embeddings...")
+    # df["model_a_embedding"] = get_llm_embedding(df[models[0]].tolist(), config.ranker.embedding_model)
+    # df["model_b_embedding"] = get_llm_embedding(df[models[1]].tolist(), config.ranker.embedding_model)
+    # df = df[df["model_a_embedding"].notna() & df["model_b_embedding"].notna()]
+    # df["model_a_embedding"] = df["model_a_embedding"].apply(lambda x: x / np.linalg.norm(x))
+    # df["model_b_embedding"] = df["model_b_embedding"].apply(lambda x: x / np.linalg.norm(x))
 
     # save to embeddings.pkl
-    with open(os.path.join(output_dir, f"embeddings-{config.ranker.embedding_model}.pkl"), "wb") as f:
-        pickle.dump(df[["question", models[0], models[1], "model_a_embedding", "model_b_embedding"]].to_dict(orient="records"), f)
+    # with open(os.path.join(output_dir, f"embeddings-{config.ranker.embedding_model}.pkl"), "wb") as f:
+    #     pickle.dump(df[["question", models[0], models[1], "model_a_embedding", "model_b_embedding"]].to_dict(orient="records"), f)
 
-    print("Training embedding classifier...")
-    embedding_classifier_results = train_embedding_classifier(df)
-    if config.wandb:
-        wandb.log(embedding_classifier_results)
+    # print("Training embedding classifier...")
+    # embedding_classifier_results = train_embedding_classifier(df)
+    # if config.wandb:
+    #     wandb.log(embedding_classifier_results)
 
     running_vibes = config.initial_vibes
     running_vibe_df = None  # all vibe scores for all iterations
@@ -526,7 +527,7 @@ def main(config):
         "df": df, 
         "models": models,
         "scores_df": train_results["coef_df"],
-        "embedding_classifier_results": embedding_classifier_results,
+        # "embedding_classifier_results": embedding_classifier_results,
         "config": OmegaConf.to_container(config, resolve=True),
     }
 
