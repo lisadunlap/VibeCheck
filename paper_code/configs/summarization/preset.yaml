@@ -1,0 +1,47 @@
+project: VibeCheck-Summarization
+wandb: True # Set to True to log to Weights and Biases
+num_samples: False
+dummy_eval: False
+test: False
+output_name: summarization_preset
+save_dir: pipeline_results
+data_path: data/summarization/summ_cnndm_train_with_pref_exclude_ties.csv
+test_data_path: data/summarization/summ_cnndm_test_with_pref_exclude_ties.csv
+k: 5
+batch_size: 50
+embedding_model: text-embedding-3-small
+seed: 42
+cluster_method: hierarchical 
+ranker: RelativeRanker
+sampler: Sampler
+reducer: AxisReducer
+proposer: LLMProposerFixed
+num_topic_clusters: 10
+proposer_batch_size: 5
+judges: [gpt-4o-mini]
+models: [TNLGv2, command_xlarge_beta]
+eval_only: True
+num_axes_generated: 20
+num_proposal_samples: 10
+new_prompt: True
+proposer_prompt: proposer_prompt_freeform_summarization
+
+num_eval: 20
+num_final_eval: 20
+
+axes: [
+    "Assertiveness: High: Uses definitive, confident statements. Low: Uses tentative or uncertain language.",
+    "Detail and Elaboration: High: Provides thorough, nuanced, and expansive information. Low: Gives brief or shallow responses.",
+    "Formalness: High: Uses formal and sophisticated vocabulary and sentence structure. Low: Uses casual, conversational, or informal language.",
+    "Emotional Tone: High: Infuses responses with expressive emotion, making the tone enthusiastic or empathetic. Low: Remains neutral or detached.",
+    "Creativity and Originality: High: Provides responses with novel ideas or imaginative scenarios. Low: Sticks to standard, predictable answers.",
+    "Explicitness: High: States things directly and unambiguously. Low: Uses vague or implicit language.",
+    "Humor and Playfulness: High: Uses humor, playful language, or wordplay to make the response engaging. Low: Responds in a straightforward and serious manner.",
+    "Engagement: High: Actively engages the reader using rhetorical questions or interactive phrasing. Low: Presents information passively.",
+    "Logical Rigor: High: Constructs well-supported arguments with clear reasoning. Low: Provides conclusions without thorough justification.",
+    "Conciseness: High: Uses minimal words to convey a point clearly. Low: Uses verbose language and excessive details."
+]
+
+# models
+rubric_generation_model: "gpt-4o"
+proposer_model: "gpt-4o"
