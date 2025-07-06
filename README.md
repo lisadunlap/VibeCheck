@@ -64,11 +64,3 @@ If you use this repo in your research, please cite it as follows and ideally use
 }
 ```
 
-## TODO
-
-- [X] Add a way to only optimize for model matching if you only care to find differentiating qualities
-- [ ] Add different vibe selection methods (LARS, filter by coeffs, etc)
-- [ ] Add multi-model comparison
-- [ ] Add absolute ranking option
-- [ ] Add causal inference stuff to try to match model vibes and check preference
-- [ ] Multimodal support
