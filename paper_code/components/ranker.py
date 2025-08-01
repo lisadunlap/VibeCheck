@@ -568,14 +568,14 @@ class PreferenceRanker(RelativeRanker):
 
         prompt = """Please act as an impartial judge and evaluate the quality of the responses provided by two AI assistants (A and B) to the user question displayed below. You should choose the assistant that follows the user’s instructions and answers the user’s question better. Your evaluation should consider factors such as the helpfulness, relevance, accuracy, depth, creativity, and level of detail of their responses. Begin your evaluation by comparing the two responses and provide a short explanation. Avoid any position biases and ensure that the order in which the responses were presented does not influence your decision. Do not allow the length of the responses to influence your evaluation. Do not favor certain names of the assistants. Be as objective as possible. 
 
-        Here is the prompt and the outputs of A and B respectively:
+Here is the prompt and the outputs of A and B respectively:
 
-        {prompt}
+{prompt}
 
-        Please respond with the model which contains a higher quality response. Based on your analysis, please explain your reasoning before assigning a score. Use the following format for your response:
-        Analysis: {{reasoning}}
-        Model: {{A, B, tie}}
-        """
+Please respond with the model which contains a higher quality response. Based on your analysis, please explain your reasoning before assigning a score. Use the following format for your response:
+Analysis: {{reasoning}}
+Model: {{A, B, tie}}
+"""
 
         judge_systems_prompt = "You are a fair and objective judge of model outputs. Your evaluations are clear, concise, and free from exaggerative language. You strictly adhere to the format and guidelines provided by the user, ensuring each decision is well-supported by the evidence within the outputs themselves."
         judge_outputs = []

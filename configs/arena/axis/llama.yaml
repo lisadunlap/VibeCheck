@@ -1,0 +1,63 @@
+# Path to CSV file containing model outputs. Must include columns for model responses 
+# and a 'preference' column indicating which model output was preferred.
+data_path: "data/llama3-70b-arena/llama_vs_not_llama_with_categories.csv"  # Required argument
+num_samples: null 
+
+wandb: true # If true, logs results to Weights & Biases.
+
+output_dir: "./vibecheck_results" # Directory to save results.
+name: "llama3-70b-arena-axis" # Name of the experiment, used for saving the pkl file.
+
+models: ["llama-3-70b-instruct", "not_llama"]  # List of two model names to compare. These should match the column names in the CSV.
+
+# Name of the Weights & Biases project where results will be logged.
+project_name: "vibecheck"
+
+# If true, only runs the vibe proposal step without conducting further analysis.
+proposer_only: false
+
+# llm to use for preference judgment (only used if preference column does not exist)
+preference_judge_llm: "gpt-4o"
+
+# If true, uses all data for training without creating a separate test set.
+# This can be useful for small datasets but may not give reliable accuracy estimates.
+no_holdout_set: true
+
+gradio: false # launch a Gradio interface after analysis for interactive exploration of the results.
+
+initial_vibes: [] # List of initial vibes to use in analysis. If empty, vibes will be proposed automatically.
+
+iterations: 3 # Number of iterations to run the analysis. 
+
+proposer:
+  # Number of samples to use when proposing vibes. Higher numbers will give more comprehensive but slower results.
+  num_samples: 30
+  model: "gpt-4o"
+  shuffle_positions: false # If true, shuffles the positions of the models in the prompt for finding vibes. This is best when you are using the axis proposal method.
+  batch_size: 5 # Number of samples to use for each batch (LLM call) in the vibe proposal.
+  embedding_model: "text-embedding-3-small" # Model to use for embedding analysis.
+  prompt: proposer_freeform_axis # Type of prompt to use for vibe proposal. Found in components/prompts/proposer_prompts.py
+  iteration_prompt: proposer_freeform_iteration_axis # Type of prompt to use for vibe proposal. Found in components/prompts/proposer_prompts.py
+  reduction_prompt: reduce_freeform_axis # Type of prompt to use for axis reduction. Found in components/prompts/reduction_prompts.py
+
+# Maximum number of vibes to use per iteration. This limits the number of 
+# behavioral dimensions that will be analyzed.
+num_vibes: 10
+num_final_vibes: false
+
+# If true, runs analysis on a small subset of data for testing purposes.
+test: false
+
+ranker: 
+  single_position_rank: false # If true, only ranks model outputs in one position order. This is faster but may introduce position bias in the analysis.
+  model: "gpt-4o-mini"
+  solver: "elasticnet" # Solver to use for regression analysis (choices: standard, lasso, elasticnet)
+  # num_final_vibes: null # Maximum number of vibes to use in final analysis. This limits the number of behavioral dimensions that will be analyzed.
+  embedding_model: "text-embedding-3-small" # Model to use for embedding analysis.
+  embedding_rank: false # If true, ranks model outputs using embedding similarity. This is much cheaper than the LLM ranker, but way less accurate.
+  vibe_batch_size: 5 # batch ranker
+  prompt: ranker_prompt_axis_multi # Type of prompt to use for ranker. Found in components/prompts/ranker_prompts.py
+
+filter:
+  min_score_diff: 0.05 # Minimum score difference to consider a vibe.
+  min_pref_score_diff: 0.05 # Minimum preference score difference to consider a vibe.

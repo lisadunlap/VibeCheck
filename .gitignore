@@ -45,6 +45,8 @@ MANIFEST
 cache/
 serve/global_vars.py
 
+vibecheck_results/
+
 # Installer logs
 pip-log.txt
 pip-delete-this-directory.txt
@@ -169,3 +171,9 @@ wandb/
 
 # config runs
 /pipeline_results
+
+venv/
+__pycache__/
+*.pyc
+uploads/*
+!uploads/.gitkeep
